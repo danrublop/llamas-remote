@@ -3,6 +3,11 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.1] - 2026-07-09
+
+### Fixed
+- **Number-like tags no longer disappear.** A note whose tags were all bare literals (e.g. `2024`, `42`, `true`) lost them on the next save/reload: the tag was written unquoted as `[2024]`, then decoded as a number and dropped. Such tags are now quoted on write, and existing notes that already lost the quoting are recovered on read. Regression tests added.
+
 ## [1.6.0] - 2026-07-09
 
 ### Added

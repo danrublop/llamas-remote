@@ -80,6 +80,30 @@ describe('serializeEntry ↔ parseEntry round-trip', () => {
     expect(parseEntry(legacy)?.tags).toEqual(['code', 'safari']);
   });
 
+  // Regression (MF-1): a tag that looks like a bare JSON literal (year/number/bool/null)
+  // must survive. Written bare as `[2024]` it would JSON-decode to a number and get dropped,
+  // so the serializer forces the quoted JSON form for these.
+  it('round-trips numeric / boolean / null-literal tags', () => {
+    const e = { ...base, tags: ['2024', '42', 'true', 'false', 'null'] };
+    expect(roundTrip(e)?.tags).toEqual(['2024', '42', 'true', 'false', 'null']);
+  });
+
+  it('round-trips an all-numeric single-tag set (the exact MF-1 repro)', () => {
+    expect(roundTrip({ ...base, tags: ['2024'] })?.tags).toEqual(['2024']);
+  });
+
+  it('round-trips numeric tags mixed with word tags', () => {
+    const e = { ...base, tags: ['work', '2024', 'q3'] };
+    expect(roundTrip(e)?.tags).toEqual(['work', '2024', 'q3']);
+  });
+
+  // Recovery: a file the OLD serializer already wrote as a bare numeric list `[2024]`
+  // must decode back to the string tag "2024", not vanish.
+  it('recovers a pre-fix bare numeric tag list from disk', () => {
+    const legacy = '---\nid: legacy2\ntitle: t\ntags: [2024]\n---\nbody';
+    expect(parseEntry(legacy)?.tags).toEqual(['2024']);
+  });
+
   it('handles an empty body', () => {
     expect(roundTrip({ ...base, body: '' })?.body).toBe('');
   });
