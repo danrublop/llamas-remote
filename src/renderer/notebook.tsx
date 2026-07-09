@@ -335,13 +335,17 @@ function Notebook() {
     });
   }
 
-  // The editor changed (debounced inside NotebookEditor). Persist the markdown body for the
-  // selected note and keep a live copy for copy/export + word count.
-  const onEditorChange = useCallback((markdown: string) => {
-    liveMarkdown.current = markdown;
-    setWords(countWords(markdown));
-    const id = selectedRef.current;
-    if (id && !streamingRef.current) {
+  // The editor changed (debounced/flushed inside NotebookEditor). `id` is the note the editor
+  // itself holds — persist to THAT note even if the user has since selected another (a late
+  // debounce or an unmount flush must never land in the newly-selected note). Only refresh the
+  // live copy (copy/export + word count) when the write is for the note still on screen, so a
+  // flush for the outgoing note can't clobber the incoming note's stats.
+  const onEditorChange = useCallback((id: string | null, markdown: string) => {
+    if (id === selectedRef.current) {
+      liveMarkdown.current = markdown;
+      setWords(countWords(markdown));
+    }
+    if (id) {
       window.notebookAPI.updateBody(id, markdown).then(refresh).catch(() => {});
     }
   }, [refresh]);
@@ -663,6 +667,7 @@ function Notebook() {
           ) : (
             <NotebookEditor
               key={editorKey}
+              noteId={selectedId}
               markdown={editorMarkdown}
               model={current?.model}
               onChange={onEditorChange}
