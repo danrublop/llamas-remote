@@ -3,6 +3,15 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.0] - 2026-07-09
+
+### Added
+- **In-app auto-update.** The app now checks GitHub for new releases on launch, downloads them in the background, and installs the update on the next quit — with a "Check for Updates…" item in the tray menu for an on-demand check. Update checks only run in packaged builds.
+- **Signed & notarized publishing pipeline.** Releases are built, signed, and notarized through a reproducible `npm run release:mac` flow and published to GitHub. The signing/notarization step is a no-op when Apple credentials aren't present, so unsigned local builds still work. See `RELEASING.md` for the release flow and required secrets.
+
+### Changed
+- Removed stale pre-pivot release scripts and artifacts (old "i cant code" build/homebrew tooling) and fixed lingering references to the previous project name in the remaining release script.
+
 ## [1.4.2] - 2026-07-09
 
 ### Fixed
