@@ -1,6 +1,6 @@
 {
   "name": "llamas-remote",
-  "version": "1.4.2",
+  "version": "1.6.0",
   "description": "Llamas Remote — query selected text and screenshots with local LLMs from the macOS notch; a private chat + notebook.",
   "main": "dist/main/main.js",
   "scripts": {
@@ -21,6 +21,7 @@
     "dist:win": "npm run build:prod && electron-builder --win",
     "dist:linux": "npm run build:prod && electron-builder --linux",
     "build:mac": "npm run build:prod && electron-builder --mac --publish=never",
+    "release:mac": "npm run build:prod && electron-builder --mac --publish always",
     "build:win": "npm run build:prod && electron-builder --win --publish=never",
     "build:linux": "npm run build:prod && electron-builder --linux --publish=never",
     "postinstall": "electron-builder install-app-deps",
@@ -42,7 +43,12 @@
   ],
   "author": "Llamas Remote",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danrublop/llamas-remote.git"
+  },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^20.19.33",
@@ -70,6 +76,10 @@
     "@tiptap/extension-code-block-lowlight": "^3.27.3",
     "@tiptap/extension-color": "^3.27.3",
     "@tiptap/extension-highlight": "^3.27.3",
+    "@tiptap/extension-table": "^3.27.3",
+    "@tiptap/extension-table-cell": "^3.27.3",
+    "@tiptap/extension-table-header": "^3.27.3",
+    "@tiptap/extension-table-row": "^3.27.3",
     "@tiptap/extension-text-style": "^3.27.3",
     "@tiptap/markdown": "^3.23.6",
     "@tiptap/pm": "^3.23.6",
@@ -78,6 +88,7 @@
     "axios": "^1.13.5",
     "better-sqlite3": "^11.10.0",
     "dompurify": "^3.4.5",
+    "electron-updater": "^6.8.9",
     "lowlight": "^3.3.0",
     "lucide-react": "^0.469.0",
     "node-html-parser": "^7.1.0",
@@ -92,6 +103,15 @@
       "output": "build",
       "buildResources": "build-resources"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "danrublop",
+        "repo": "llamas-remote",
+        "releaseType": "release"
+      }
+    ],
+    "afterSign": "build-resources/notarize.js",
     "files": [
       "dist/**/*",
       "node_modules/**/*",

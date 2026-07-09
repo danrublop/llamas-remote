@@ -91,6 +91,19 @@ export class NotebookStore {
     else this.index.setPinned(id, pinned);
   }
 
+  /** Replace a note's tags: frontmatter is the source of truth, so persist to the .md
+      (which reindexes with the new tags) — mirroring rename/setPinned. */
+  setTags(id: string, tags: string[]): void {
+    const e = this.files.read(id);
+    if (e) this.persist({ ...e, tags });
+    else this.index.setTags(id, tags);
+  }
+
+  /** Distinct tags across all live notes (for the tag filter / autocomplete). */
+  getAllTags(): string[] {
+    return this.index.getAllTags();
+  }
+
   /**
    * Update a note body from an in-app edit (preserves metadata + refreshes mtime). When
    * `aiBlocks` is supplied, the AI-block sidecar is rewritten from it (the live doc is
@@ -165,6 +178,7 @@ export class NotebookStore {
             sourceKind: action.meta?.sourceKind,
             createdAt: action.meta?.createdAt,
             imagePath: action.meta?.imagePath,
+            pinned: action.meta?.pinned,
           });
           if (action.kind === 'insert') summary.inserted++;
           else if (action.kind === 'reindex') summary.reindexed++;
@@ -182,6 +196,14 @@ export class NotebookStore {
   }
 
   search(query: string): SearchHit[] {
-    return this.index.search(query);
+    // FTS5 MATCH throws a syntax error on stray operators/quotes in raw user input (a bare `"`,
+    // `AND`, etc). Guard here so both callers (notebook:search + panel:search) degrade to no
+    // results instead of surfacing an error.
+    try {
+      return this.index.search(query);
+    } catch (e) {
+      console.warn('search failed for query', JSON.stringify(query), e);
+      return [];
+    }
   }
 }

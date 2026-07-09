@@ -18,9 +18,7 @@
     "declaration": false
   },
   "include": [
-    "src/renderer/**/*",
-    "src/renderer/renderer-types.d.ts",
-    "src/renderer/types/electron.d.ts"
+    "src/renderer/**/*"
   ],
   "exclude": [
     "node_modules",

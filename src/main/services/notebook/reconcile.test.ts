@@ -47,11 +47,18 @@ describe('reconcileEntry', () => {
   });
 
   // Metadata must survive an index rebuild (e.g. fresh install) — carried from frontmatter.
-  it('carries frontmatter metadata on insert/reindex/revive', () => {
-    const meta = { title: 'My note', model: 'mistral:latest', sourceApp: 'Safari', sourceKind: 'text' as const, createdAt: '2026-05-25T00:00:00Z' };
+  it('carries frontmatter metadata (incl. pinned) on insert/reindex/revive', () => {
+    const meta = { title: 'My note', model: 'mistral:latest', sourceApp: 'Safari', sourceKind: 'text' as const, createdAt: '2026-05-25T00:00:00Z', pinned: true };
     expect(reconcileEntry(undefined, disk({ meta })).meta).toEqual(meta);
     expect(reconcileEntry(row({ indexedMtimeMs: 1000 }), disk({ mtimeMs: 2000, meta })).meta).toEqual(meta); // reindex
     expect(reconcileEntry(row({ tombstoned: true }), disk({ meta })).meta).toEqual(meta); // revive
+  });
+
+  // A present-but-unparseable file must never be tombstoned — the file (with content) is still
+  // on disk, so hiding it would look like data loss.
+  it('keeps the existing row for a present-but-unparseable file (no tombstone)', () => {
+    expect(reconcileEntry(row({ tombstoned: false }), disk({ unparseable: true })).kind).toBe('noop');
+    expect(reconcileEntry(undefined, disk({ unparseable: true })).kind).toBe('noop');
   });
 
   // The data-loss path the eng review flagged: when the markdown is newer, the
@@ -82,7 +89,7 @@ describe('reconcileEntry', () => {
     expect(reconcileEntry(row({ tombstoned: true }), undefined).kind).toBe('noop');
   });
 
-  it('revives a tombstoned entry when its file reappears with the same id', () => {
+  it('revives a tombstoned entry (legacy row, no tombstone timestamp) when its file reappears', () => {
     const a = reconcileEntry(
       row({ tombstoned: true, tags: ['kept'] }),
       disk({ body: 'back', frontmatterTags: ['fresh'], mtimeMs: 3000 }),
@@ -91,6 +98,38 @@ describe('reconcileEntry', () => {
     expect(a.body).toBe('back');
     expect(a.tags).toEqual(['kept', 'fresh']);
     expect(a.mtimeMs).toBe(3000);
+  });
+
+  // Undo window: soft-delete tombstones the row but leaves the .md on disk (real removal is
+  // ~6s later at commit). A focus-resync/relaunch inside that window must NOT resurrect it —
+  // the file's mtime is older than the tombstone, so it stays hidden.
+  it('does NOT revive a tombstoned entry whose file is not newer than the tombstone (undo window)', () => {
+    const a = reconcileEntry(
+      row({ tombstoned: true, tombstonedAtMs: 5000 }),
+      disk({ body: 'still on disk', mtimeMs: 4000 }), // file older than the tombstone
+    );
+    expect(a.kind).toBe('noop');
+  });
+
+  it('does NOT revive when file mtime equals the tombstone time (epsilon guard)', () => {
+    const a = reconcileEntry(
+      row({ tombstoned: true, tombstonedAtMs: 5000 }),
+      disk({ mtimeMs: 5000 }),
+    );
+    expect(a.kind).toBe('noop');
+  });
+
+  // The legitimate case must still work: a note actually re-created / edited on disk after
+  // deletion has a newer mtime than the tombstone, so it revives.
+  it('revives a tombstoned entry re-created on disk after deletion (file newer than tombstone)', () => {
+    const a = reconcileEntry(
+      row({ tombstoned: true, tombstonedAtMs: 5000, tags: ['kept'] }),
+      disk({ body: 'recreated', frontmatterTags: ['fresh'], mtimeMs: 9000 }),
+    );
+    expect(a.kind).toBe('revive');
+    expect(a.body).toBe('recreated');
+    expect(a.tags).toEqual(['kept', 'fresh']);
+    expect(a.mtimeMs).toBe(9000);
   });
 
   it('noops when there is neither a file nor a row', () => {

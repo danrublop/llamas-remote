@@ -26,6 +26,20 @@ function esc(value: string): string {
   return /[:#\n]/.test(value) ? JSON.stringify(value) : value;
 }
 
+/**
+ * Serialize the tag list. Tags are user-editable, so a tag containing a comma, a bracket,
+ * a quote, a newline, or leading/trailing whitespace would corrupt the bare comma-joined
+ * flow list on round-trip (the reader splits on `,` and strips `[`/`]` before unescaping).
+ * When any tag needs escaping we emit the whole array as strict JSON (`tags: ["a,b","c"]`),
+ * which parseEntry decodes atomically; otherwise we keep the readable bare form for the
+ * common case (and for backward-compatible files written before this fix).
+ */
+function serializeTags(tags: readonly string[]): string {
+  const needsJson = tags.some((t) => /[,[\]"\n]/.test(t) || t.trim() !== t);
+  if (needsJson) return JSON.stringify(tags);
+  return `[${tags.map(esc).join(', ')}]`;
+}
+
 function unesc(raw: string): string {
   const v = raw.trim();
   if (v.startsWith('"') && v.endsWith('"')) {
@@ -49,7 +63,6 @@ export function isValidEntryId(id: unknown): id is string {
 }
 
 export function serializeEntry(entry: NotebookEntry): string {
-  const tags = entry.tags.map(esc).join(', ');
   const fm = [
     '---',
     `id: ${esc(entry.id)}`,
@@ -60,7 +73,7 @@ export function serializeEntry(entry: NotebookEntry): string {
     `source_kind: ${entry.sourceKind}`,
     `pinned: ${entry.pinned ? 'true' : 'false'}`,
     ...(entry.imagePath ? [`image: ${esc(entry.imagePath)}`] : []),
-    `tags: [${tags}]`,
+    `tags: ${serializeTags(entry.tags)}`,
     '---',
     '',
   ].join('\n');
@@ -97,8 +110,23 @@ export function parseEntry(text: string): ParsedFile | null {
     else if (key === 'image') e.imagePath = unesc(val);
     else if (key === 'pinned') e.pinned = val === 'true';
     else if (key === 'tags') {
-      const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();
-      e.tags = inner.length ? inner.split(',').map((t) => unesc(t)).filter(Boolean) : [];
+      const raw = val.trim();
+      // Strict-JSON form (written when a tag has a comma/bracket/quote/whitespace): decode
+      // atomically so those tags survive intact. Falls through to the legacy bare-list parse
+      // for `tags: [a, b]` files (invalid JSON — unquoted — so JSON.parse throws).
+      let parsed: string[] | null = null;
+      if (raw.startsWith('[') && raw.endsWith(']')) {
+        try {
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) parsed = arr.filter((t): t is string => typeof t === 'string');
+        } catch { /* not JSON — legacy bare list below */ }
+      }
+      if (parsed) {
+        e.tags = parsed.filter(Boolean);
+      } else {
+        const inner = raw.replace(/^\[/, '').replace(/\]$/, '').trim();
+        e.tags = inner.length ? inner.split(',').map((t) => unesc(t)).filter(Boolean) : [];
+      }
     }
   }
   if (!e.id) return null;
@@ -107,6 +135,12 @@ export function parseEntry(text: string): ParsedFile | null {
 }
 
 export class MarkdownStore {
+  // Cache of the previous listDiskEntries() scan, keyed by filename → { mtimeMs, entry }.
+  // Lets the scan go stat-first: a file whose mtime is unchanged since we last read it is
+  // returned from cache without a fresh readFileSync + frontmatter parse. Without this,
+  // every focus-resync re-read and re-parsed every note body on the main thread.
+  private scanCache = new Map<string, { mtimeMs: number; entry: DiskEntry }>();
+
   constructor(private readonly dir: string) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }
@@ -168,30 +202,67 @@ export class MarkdownStore {
     return parseEntry(readFileSync(path, 'utf8'));
   }
 
-  /** List every valid `.md` entry on disk as a DiskEntry (id, body, tags, mtime). */
+  /** List every valid `.md` entry on disk as a DiskEntry (id, body, tags, mtime).
+   *  Stat-first: each file is stat()'d cheaply, and only files that are new or whose mtime
+   *  changed since the last scan are read + parsed; unchanged files reuse the cached parse
+   *  (identical DiskEntry, so reconcile reaches the same outcome). */
   listDiskEntries(): DiskEntry[] {
-    if (!existsSync(this.dir)) return [];
+    if (!existsSync(this.dir)) {
+      this.scanCache.clear();
+      return [];
+    }
     const out: DiskEntry[] = [];
+    const nextCache = new Map<string, { mtimeMs: number; entry: DiskEntry }>();
     for (const file of readdirSync(this.dir)) {
       if (!file.endsWith('.md')) continue;
       const full = join(this.dir, file);
-      const parsed = parseEntry(readFileSync(full, 'utf8'));
-      if (!parsed) continue;
-      out.push({
-        id: parsed.id,
-        body: parsed.body,
-        frontmatterTags: parsed.tags,
-        mtimeMs: statSync(full).mtimeMs,
-        meta: {
-          title: parsed.title || undefined,
-          model: parsed.model || undefined,
-          sourceApp: parsed.sourceApp || undefined,
-          sourceKind: parsed.sourceKind,
-          createdAt: parsed.createdAt || undefined,
-          imagePath: parsed.imagePath || undefined,
-        },
-      });
+      // Isolate per-file failures: a single permission/race error on one file must not abort
+      // the whole reconcile and hide every other note.
+      try {
+        const mtimeMs = statSync(full).mtimeMs;
+        const cached = this.scanCache.get(file);
+        if (cached && cached.mtimeMs === mtimeMs) {
+          // Unchanged since the last scan — skip the readFileSync + parse entirely.
+          out.push(cached.entry);
+          nextCache.set(file, cached);
+          continue;
+        }
+        const parsed = parseEntry(readFileSync(full, 'utf8'));
+        if (!parsed) {
+          // File is present but malformed. If its basename is a valid entry id, surface it as
+          // an unparseable entry so reconcile keeps the existing row instead of tombstoning a
+          // note whose file (with content) still sits on disk.
+          const id = file.slice(0, -3);
+          if (isValidEntryId(id)) {
+            const entry: DiskEntry = { id, body: '', frontmatterTags: [], mtimeMs, unparseable: true };
+            out.push(entry);
+            nextCache.set(file, { mtimeMs, entry });
+          }
+          continue;
+        }
+        const entry: DiskEntry = {
+          id: parsed.id,
+          body: parsed.body,
+          frontmatterTags: parsed.tags,
+          mtimeMs,
+          meta: {
+            title: parsed.title || undefined,
+            model: parsed.model || undefined,
+            sourceApp: parsed.sourceApp || undefined,
+            sourceKind: parsed.sourceKind,
+            createdAt: parsed.createdAt || undefined,
+            imagePath: parsed.imagePath || undefined,
+            pinned: parsed.pinned,
+          },
+        };
+        out.push(entry);
+        nextCache.set(file, { mtimeMs, entry });
+      } catch (e) {
+        console.warn(`listDiskEntries: skipping unreadable file ${file}:`, e);
+      }
     }
+    // Swap in the fresh cache so deleted files drop out and don't leak.
+    this.scanCache = nextCache;
     return out;
   }
 }

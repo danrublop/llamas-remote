@@ -3,6 +3,7 @@ import { platform } from 'os';
 import { existsSync } from 'fs';
 import { shell } from 'electron';
 import axios from 'axios';
+import { OllamaLlmClient } from './llm/ollama-llm-client';
 
 // Known macOS Ollama binary locations: Homebrew (Intel + Apple Silicon) and the
 // Ollama.app bundle (what ollama.com's macOS download installs).
@@ -213,11 +214,12 @@ export class OllamaProcessService {
         return true;
       }
 
-      // Pull the model if not available
+      // Pull the model if not available. Delegate to OllamaLlmClient.pullModel, which streams
+      // the NDJSON and rejects on a terminal {"error":...} line. The old fire-and-forget POST
+      // ignored the body, so it logged "pulled successfully" even when the pull failed (the
+      // error arrives over HTTP 200, so the POST itself resolves).
       console.log(`Pulling model ${modelName}...`);
-      await axios.post(`${this.baseUrl}/api/pull`, {
-        name: modelName
-      }, { timeout: 300000 }); // 5 minutes for model download
+      await new OllamaLlmClient().pullModel(modelName);
 
       console.log(`Model ${modelName} pulled successfully`);
       return true;

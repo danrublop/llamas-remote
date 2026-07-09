@@ -5,6 +5,7 @@ import {
   reconcilePick,
   draftAfter,
   statusAfterDismiss,
+  classifyFireOutcome,
 } from './panel-dismiss';
 
 describe('decideEscapeAction (two-stage Esc)', () => {
@@ -67,5 +68,25 @@ describe('statusAfterDismiss', () => {
     expect(statusAfterDismiss('idle')).toBe('idle');
     expect(statusAfterDismiss('done')).toBe('idle');
     expect(statusAfterDismiss('error')).toBe('idle');
+  });
+});
+
+describe('classifyFireOutcome (fire() run-id guard + result handling)', () => {
+  it('ignores a superseded run even when it succeeded (newer fire owns the UI)', () => {
+    expect(classifyFireOutcome({ superseded: true, ok: true })).toBe('ignore');
+    expect(classifyFireOutcome({ superseded: true, ok: false, error: 'boom' })).toBe('ignore');
+  });
+  it('treats a resolved cancelled as a no-op, not a red error (regression: no spurious "cancelled")', () => {
+    expect(classifyFireOutcome({ superseded: false, ok: false, error: 'cancelled' })).toBe('cancelled');
+  });
+  it('reports a genuine failure as an error', () => {
+    expect(classifyFireOutcome({ superseded: false, ok: false, error: 'Ollama stream error: canceled' })).toBe('error');
+    expect(classifyFireOutcome({ superseded: false, ok: false, error: undefined })).toBe('error');
+  });
+  it('surfaces a rejected IPC invoke (ok:false, thrown message) as an error, never a hang', () => {
+    expect(classifyFireOutcome({ superseded: false, ok: false, error: 'IPC channel closed' })).toBe('error');
+  });
+  it('resolves a normal successful run to success', () => {
+    expect(classifyFireOutcome({ superseded: false, ok: true, error: undefined })).toBe('success');
   });
 });

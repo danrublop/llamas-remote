@@ -3,6 +3,35 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.0] - 2026-07-09
+
+### Added
+- **Tables in notes.** A table button in the editor toolbar opens a Google-Docs-style grid picker — drag across the grid to size, click to insert. Columns are resizable, and tables round-trip through the on-disk Markdown as GFM pipe tables (verified so they survive save/reload).
+- **Code language on the block.** The syntax-highlighting language for a code block now lives as a dropdown on the block itself (top-right, on hover) instead of the toolbar, so each block picks its own language.
+- **Note tags.** Notes carry tags in their Markdown frontmatter (source of truth), indexed for search, shown as chips with tag filtering.
+- **Notch as a clipboard.** The selection box in the notch has a copy button (bottom-right on hover) that copies the captured text to the system clipboard; the scrollbar is hidden for a cleaner read.
+- **Empty-note placeholder** in the editor ("Start writing, or type / for AI…"), which also advertises the `/` slash command.
+
+### Changed
+- **`/` commands run on the note's text.** A slash command with nothing selected now operates on the note text above the command instead of sending an empty selection (which made the model riff on the command word). Highlighted text still takes priority.
+- Anthropic answers use a per-model `max_tokens` ceiling with an honest "(truncated)" marker instead of silently capping at 4096.
+- Faster dev builds and a non-blocking Ollama startup (the tray/notch no longer wait on the model pull).
+
+### Fixed
+- **Inline `/` generation no longer loses its answer on a note switch.** Switching notes mid-generation now cancels the run cleanly instead of discarding the finished answer and writing it to the wrong note.
+- Pins survive an index rebuild; a malformed or unreadable note file no longer vanishes a note or aborts the whole disk reconcile; note search no longer crashes on a stray quote.
+- Accessibility permission is now surfaced (once) when hovering the notch with no permission granted, instead of a silently blank capture box.
+- Hardening: Content-Security-Policy on both windows, navigation locked to the app's own pages, and guarded folder IPC handlers.
+
+## [1.5.0] - 2026-07-09
+
+### Added
+- **In-app auto-update.** The app now checks GitHub for new releases on launch, downloads them in the background, and installs the update on the next quit — with a "Check for Updates…" item in the tray menu for an on-demand check. Update checks only run in packaged builds.
+- **Signed & notarized publishing pipeline.** Releases are built, signed, and notarized through a reproducible `npm run release:mac` flow and published to GitHub. The signing/notarization step is a no-op when Apple credentials aren't present, so unsigned local builds still work. See `RELEASING.md` for the release flow and required secrets.
+
+### Changed
+- Removed stale pre-pivot release scripts and artifacts (old "i cant code" build/homebrew tooling) and fixed lingering references to the previous project name in the remaining release script.
+
 ## [1.4.2] - 2026-07-09
 
 ### Fixed

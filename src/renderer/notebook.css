@@ -198,6 +198,31 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .note-meta .nm-model { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-soft); font-weight: 500; }
 .note-meta .nm-dot { opacity: 0.5; }
 
+/* ── Tags ── quiet pills on the badge surface; chips reuse --surface-strong + --hairline */
+.tag-row { padding: 6px var(--pad-x) 0; }
+.tag-editor { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 2px 0 8px; background: var(--surface-strong); border-radius: 11px; font-size: 11.5px; color: var(--ink-soft); }
+.tag-chip.static { padding: 0 8px; height: 20px; }
+.tag-chip-label { border: none; background: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-chip-label:hover { color: var(--accent); }
+.tag-chip-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: none; border-radius: 8px; background: none; padding: 0; color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer; }
+.tag-chip-x:hover { background: var(--accent-soft); color: var(--accent); }
+.tag-add { border: none; outline: none; background: none; font-family: var(--sans); font-size: 11.5px; color: var(--ink); padding: 2px 4px; min-width: 84px; height: 22px; }
+.tag-add::placeholder { color: var(--muted-soft); }
+
+/* Sidebar note-row tag chips: smaller, flatter, filter on click */
+.note-row .row-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.row-tag { border: none; background: var(--surface-strong); color: var(--muted); border-radius: 9px; padding: 1px 7px; font-size: 10.5px; font-family: var(--sans); cursor: pointer; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-tag:hover { color: var(--accent); }
+.row-tag.active { background: var(--accent-soft); color: var(--accent); }
+.row-tag-more { font-size: 10.5px; color: var(--muted-soft); align-self: center; }
+
+/* Active tag filter header at the top of the note list */
+.tag-filter-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px 8px; margin-bottom: 2px; border-bottom: 1px solid var(--hairline-soft); }
+.tfb-label { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+.tfb-clear { border: none; background: none; color: var(--accent); font-family: var(--sans); font-size: 11.5px; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.tfb-clear:hover { background: var(--accent-soft); }
+
 /* Formatting controls — floating bar, bottom-right of the editor */
 .toolbar { position: absolute; bottom: 18px; right: 22px; z-index: 5; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 12px; box-shadow: 0 2px 10px rgba(38,37,30,0.06); }
 .toolbar button { min-width: 28px; height: 28px; padding: 0 7px; border: 1px solid transparent; background: none; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; }
@@ -278,6 +303,17 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
    plus bottom clearance for the floating toolbar. */
 .nb-editor__content .ProseMirror { outline: none; line-height: 1.68; padding: 10px var(--pad-x) 120px; }
 .nb-editor__content .ProseMirror:focus { outline: none; }
+/* Empty-note placeholder — makes the `/` slash affordance discoverable. Pure CSS (the
+   @tiptap/extension-placeholder dep isn't installed): an empty doc is a single paragraph whose
+   only child is ProseMirror's trailing <br>, so target that and drop the hint via ::before.
+   Vanishes the moment any text or a second block appears (:only-child / :has stop matching). */
+.nb-editor__content .ProseMirror > p:only-child:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: 'Start writing, or type / for AI…';
+  color: var(--muted-soft);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
 
 /* AI block: thin accent left rule + a quiet model bar. */
 .ai-block { border-left: 2px solid var(--accent); padding: 2px 0 2px 14px; margin: 14px 0; }
@@ -308,6 +344,36 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .nb-editor__content .ProseMirror pre { background: var(--canvas-soft); border: 1px solid var(--hairline); padding: 13px 15px; border-radius: 12px; overflow-x: auto; margin: 0.9em 0; line-height: 1.55; }
 .nb-editor__content .ProseMirror pre code { font-family: var(--mono); font-size: 0.85em; background: none; border: none; padding: 0; color: var(--ink); }
 .nb-editor__content .ProseMirror code { font-family: var(--mono); font-size: 0.86em; background: var(--surface-card); border: 1px solid var(--hairline); padding: 1px 5px; border-radius: 5px; }
+/* Code-block NodeView: language dropdown pinned to the block's top-right (Notion/Docs style) */
+.nb-editor__content .cb { position: relative; }
+.nb-editor__content .cb pre { margin: 0.9em 0; }
+.cb-lang {
+  position: absolute; top: 6px; right: 8px; z-index: 1;
+  height: 22px; max-width: 120px; border: 1px solid var(--hairline); border-radius: 7px;
+  background: var(--surface-card); color: var(--muted); font-family: var(--mono); font-size: 11px;
+  padding: 0 4px; cursor: pointer; opacity: 0; transition: opacity 0.12s;
+}
+.cb:hover .cb-lang, .cb-lang:focus-visible { opacity: 1; }
+.cb-lang:hover { color: var(--ink); }
+
+/* Table grid picker (opens upward from the bottom toolbar) */
+.tb-table { position: relative; display: inline-flex; }
+.grid-pop {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 40;
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px;
+  padding: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+}
+.grid-pop .grid { display: grid; grid-template-columns: repeat(8, 16px); gap: 3px; }
+.gcell { width: 16px; height: 16px; border: 1px solid var(--hairline); border-radius: 3px; cursor: pointer; background: var(--canvas-soft); }
+.gcell.on { background: var(--accent); border-color: var(--accent); }
+.grid-label { text-align: center; font-size: 11px; color: var(--muted); margin-top: 7px; }
+
+/* Tables in the editor */
+.nb-editor__content .ProseMirror table { border-collapse: collapse; width: 100%; table-layout: fixed; margin: 0.9em 0; overflow: hidden; }
+.nb-editor__content .ProseMirror th, .nb-editor__content .ProseMirror td { border: 1px solid var(--hairline); padding: 6px 9px; vertical-align: top; position: relative; }
+.nb-editor__content .ProseMirror th { background: var(--surface-card); font-weight: 600; text-align: left; }
+.nb-editor__content .ProseMirror .selectedCell::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--accent) 16%, transparent); pointer-events: none; }
+.nb-editor__content .ProseMirror .column-resize-handle { position: absolute; right: -1px; top: 0; bottom: 0; width: 3px; background: var(--accent); cursor: col-resize; }
 /* Highlighter mark (default yellow; inline background-color set for colored highlights) */
 /* Highlights sit on light-toned backgrounds in both themes, so pin the text dark for contrast. */
 .nb-editor__content .ProseMirror mark { background: #ffe37a; color: #26251e; border-radius: 3px; padding: 0 2px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }

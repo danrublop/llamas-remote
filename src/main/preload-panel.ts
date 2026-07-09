@@ -52,6 +52,8 @@ const api = {
   /** Open a native file picker; returns the chosen files' paths + display names. */
   pickFiles: (): Promise<Array<{ path: string; name: string }>> => ipcRenderer.invoke('panel:pick-files'),
   /** Open the notebook window now (watch the answer stream in). */
+  copyText: (text: string) => ipcRenderer.send('panel:copy', text),
+
   openNotebook: () => ipcRenderer.send('open-notebook'),
   /** Open the settings window (pull models, add cloud keys). */
   openSettings: () => ipcRenderer.send('open-settings'),

@@ -80,3 +80,27 @@ export function draftAfter(event: DraftEvent, draft: string): string {
 export function statusAfterDismiss(current: Status): Status {
   return current === 'running' ? 'running' : 'idle';
 }
+
+/** How a settled fire() should resolve, given the run-id guard + the run's result. */
+export type FireOutcome = 'ignore' | 'success' | 'cancelled' | 'error';
+
+/**
+ * Decide what a fire() should do once its query settles. Mirrors the run-id guard main.ts
+ * uses server-side: each fire() is tagged with a monotonic id, so if a NEWER fire has since
+ * started (`superseded`) this stale result is ignored — it must not paint over the newer run.
+ *
+ * Otherwise: `ok` -> success; a resolved `error === 'cancelled'` (the run was superseded/closed
+ * deliberately, and main already suppressed the notebook:error) -> a no-op, never a red "error";
+ * anything else -> a real error the user should see. The same function classifies a rejected
+ * IPC invoke — pass `ok: false` with the thrown message so a hard reject can't hang on 'running'.
+ */
+export function classifyFireOutcome(params: {
+  superseded: boolean;
+  ok?: boolean;
+  error?: string;
+}): FireOutcome {
+  if (params.superseded) return 'ignore';
+  if (params.ok) return 'success';
+  if (params.error === 'cancelled') return 'cancelled';
+  return 'error';
+}

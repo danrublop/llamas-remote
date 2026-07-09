@@ -40,6 +40,44 @@ describe('markdown round-trip (md -> doc -> md identity)', () => {
     expect(mdToMd(md)).toContain('const x = 1;');
     expect(mdToMd(md).startsWith('```')).toBe(true);
   });
+
+  it('round-trips a GFM table (survives save/reload — no data loss)', () => {
+    const md = '| A | B |\n| --- | --- |\n| 1 | 2 |';
+    const out = mdToMd(md);
+    // A GFM pipe table with the header separator + the cell values must survive.
+    expect(out).toContain('| --- |');
+    expect(out).toContain('A');
+    expect(out).toContain('1');
+    // And it reloads as a real table node, not plain text.
+    const editor = new Editor({ extensions: notebookExtensions(), content: md, contentType: 'markdown' });
+    expect(JSON.stringify(editor.getJSON())).toContain('"table"');
+    editor.destroy();
+  });
+
+  // Cell text after each `md -> doc -> md -> doc` round-trip. Regression guard for the custom
+  // table serializer (TableMd) that escapes `|`; the built-in serializer dropped everything
+  // after a literal pipe in a cell.
+  function tableCells(md: string): string[] {
+    const first = new Editor({ extensions: notebookExtensions(), content: md, contentType: 'markdown' });
+    const out = first.getMarkdown();
+    first.destroy();
+    const second = new Editor({ extensions: notebookExtensions(), content: out, contentType: 'markdown' });
+    const cells: string[] = [];
+    second.state.doc.descendants((n) => { if (n.isText && n.text) cells.push(n.text); });
+    second.destroy();
+    return cells;
+  }
+
+  it('preserves a literal pipe in a table cell (no truncation)', () => {
+    // `grep x | wc` must survive — the built-in serializer dropped ` wc` after the pipe.
+    expect(tableCells('| H |\n| --- |\n| grep x \\| wc |')).toContain('grep x | wc');
+  });
+
+  it('preserves double-pipe and inline formatting in cells', () => {
+    const cells = tableCells('| A | B |\n| --- | --- |\n| a \\|\\| b | **bold** |');
+    expect(cells).toContain('a || b');
+    expect(cells).toContain('bold');
+  });
 });
 
 describe('AiBlock serialization', () => {

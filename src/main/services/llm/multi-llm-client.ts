@@ -18,7 +18,7 @@ export function parseModel(model: string): { provider: Provider; id: string } {
 /** Curated hosted models offered in the picker when the provider's key is set. */
 export const CLOUD_MODELS: Record<'openai' | 'anthropic', string[]> = {
   openai: ['openai/gpt-4o', 'openai/gpt-4o-mini'],
-  anthropic: ['anthropic/claude-sonnet-4-5', 'anthropic/claude-3-5-haiku-latest'],
+  anthropic: ['anthropic/claude-sonnet-4-5', 'anthropic/claude-haiku-4-5'],
 };
 
 export class MultiLlmClient implements LlmClient {

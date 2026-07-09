@@ -2,6 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <!-- Defense-in-depth CSP. style-src needs 'unsafe-inline' because style-loader injects
+         runtime <style> tags. script-src is injected per build mode (see webpack configs):
+         dev adds 'unsafe-eval' for the eval-source-map devtool; prod ships 'self' only.
+         connect-src 'self' — LLM traffic goes through the main process. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src <%= cspScriptSrc %>; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Llamas Remote — Notebook</title>
 </head>

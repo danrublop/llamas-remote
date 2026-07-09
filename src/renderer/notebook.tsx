@@ -8,7 +8,7 @@ import type { Editor } from '@tiptap/react';
 import './notebook.css';
 
 interface NotebookMeta { prompt: string; selection: string; sourceApp?: string; model: string }
-interface NoteSummary { id: string; title: string; snippet: string; sourceApp?: string; model?: string; imagePath?: string; pinned: boolean; createdAt: string }
+interface NoteSummary { id: string; title: string; snippet: string; tags: string[]; sourceApp?: string; model?: string; imagePath?: string; pinned: boolean; createdAt: string }
 interface AIBlockMeta { blockId: string; prompt: string; model: string; commandId?: string; selection?: string; createdAt: string }
 interface NoteWithBlocks { body: string; aiBlocks: AIBlockMeta[] }
 interface Folder { id: string; name: string; parentId: string | null }
@@ -16,12 +16,16 @@ interface FolderState { folders: Folder[]; assignments: Record<string, string> }
 interface NotebookAPI {
   openSettings: () => void;
   list: () => Promise<NoteSummary[]>;
+  resync: () => Promise<NoteSummary[]>; // syncFromDisk in main → fresh summaries (external-edit pickup)
+  cancelGen: () => Promise<void>;       // abort all in-flight inline AI-block generations
   search: (query: string) => Promise<Array<{ id: string; snippet: string; tags: string[] }>>;
   getBody: (id: string) => Promise<string | null>;
   getNote: (id: string) => Promise<NoteWithBlocks | null>;
   getImage: (id: string) => Promise<string | null>;
   rename: (id: string, title: string) => Promise<void>;
   setPinned: (id: string, pinned: boolean) => Promise<void>;
+  setTags: (id: string, tags: string[]) => Promise<void>;
+  getAllTags: () => Promise<string[]>;
   updateBody: (id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>) => Promise<void>;
   hide: (id: string) => Promise<void>;
   restore: (id: string) => Promise<void>;
@@ -77,19 +81,11 @@ const Ico = {
   sidebar: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" /></svg>,
   search: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>,
   code: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>,
+  table: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" /><line x1="15" y1="3" x2="15" y2="21" /></svg>,
   highlight: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l-4 4v3h3l4-4" /><path d="M13 7l4 4" /><path d="M20.5 6.5a2.1 2.1 0 0 0-3-3L9 12l3 3z" /></svg>,
   moon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>,
   sun: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="4" /><line x1="12" y1="20" x2="12" y2="22" /><line x1="4.2" y1="4.2" x2="5.6" y2="5.6" /><line x1="18.4" y1="18.4" x2="19.8" y2="19.8" /><line x1="2" y1="12" x2="4" y2="12" /><line x1="20" y1="12" x2="22" y2="12" /><line x1="4.2" y1="19.8" x2="5.6" y2="18.4" /><line x1="18.4" y1="5.6" x2="19.8" y2="4.2" /></svg>,
 };
-
-// Languages offered by the code-block dropdown (all bundled in lowlight's `common`).
-const CODE_LANGS: Array<{ id: string; label: string }> = [
-  { id: 'java', label: 'Java' }, { id: 'javascript', label: 'JavaScript' }, { id: 'typescript', label: 'TypeScript' },
-  { id: 'python', label: 'Python' }, { id: 'c', label: 'C' }, { id: 'cpp', label: 'C++' }, { id: 'csharp', label: 'C#' },
-  { id: 'go', label: 'Go' }, { id: 'rust', label: 'Rust' }, { id: 'ruby', label: 'Ruby' }, { id: 'php', label: 'PHP' },
-  { id: 'swift', label: 'Swift' }, { id: 'kotlin', label: 'Kotlin' }, { id: 'sql', label: 'SQL' }, { id: 'bash', label: 'Shell' },
-  { id: 'json', label: 'JSON' }, { id: 'xml', label: 'HTML/XML' }, { id: 'css', label: 'CSS' }, { id: 'plaintext', label: 'Plain' },
-];
 
 const countWords = (text: string): number => {
   const m = text.trim().match(/\S+/g);
@@ -101,6 +97,47 @@ const loadExpanded = (): Set<string> => {
   try { const a = JSON.parse(localStorage.getItem(EXPANDED_KEY) || '[]'); return new Set(Array.isArray(a) ? a : []); }
   catch { return new Set(); }
 };
+
+// Tag chips + inline add/remove for the open note. Tag text is untrusted (model/clipboard),
+// so it only ever reaches the DOM through React children (textContent) — never innerHTML.
+function TagEditor({ tags, allTags, onChange, onFilter }: {
+  tags: string[];
+  allTags: string[];
+  onChange: (tags: string[]) => void;
+  onFilter: (tag: string) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const t = draft.trim();
+    setDraft('');
+    if (!t || tags.some((x) => x.toLowerCase() === t.toLowerCase())) return;
+    onChange([...tags, t]);
+  };
+  const remove = (tag: string) => onChange(tags.filter((x) => x !== tag));
+  return (
+    <div className="tag-editor">
+      {tags.map((t) => (
+        <span key={t} className="tag-chip">
+          <button className="tag-chip-label" onClick={() => onFilter(t)} title={`Show notes tagged “${t}”`}>{t}</button>
+          <button className="tag-chip-x" onClick={() => remove(t)} title="Remove tag" aria-label={`Remove tag ${t}`}>×</button>
+        </span>
+      ))}
+      <input
+        className="tag-add"
+        list="nb-all-tags"
+        placeholder={tags.length ? 'Add tag…' : 'Add a tag…'}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); add(); }
+          else if (e.key === 'Backspace' && !draft && tags.length) remove(tags[tags.length - 1]);
+        }}
+        onBlur={add}
+      />
+      <datalist id="nb-all-tags">{allTags.map((t) => <option key={t} value={t} />)}</datalist>
+    </div>
+  );
+}
 
 function Notebook() {
   const [notes, setNotes] = useState<NoteSummary[]>([]);
@@ -123,6 +160,8 @@ function Notebook() {
   const [size, setSize] = useState(localStorage.getItem('nb-size') || '16');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<NoteSummary[] | null>(null); // null = not searching
+  const [tagFilter, setTagFilter] = useState<string | null>(null); // sidebar filtered to this tag
+  const [allTags, setAllTags] = useState<string[]>([]); // distinct live tags (add-tag suggestions)
   const [searchOpen, setSearchOpen] = useState(false); // search modal
   const [actionTarget, setActionTarget] = useState<{ kind: 'note'; note: NoteSummary } | { kind: 'folder'; folder: Folder } | null>(null); // left-click actions modal
   const [createOpen, setCreateOpen] = useState(false); // "create note/folder" modal (empty-sidebar two-finger click)
@@ -142,12 +181,17 @@ function Notebook() {
   const [editor, setEditor] = useState<Editor | null>(null); // live TipTap instance (for color/code toolbar)
   const [textColor, setTextColor] = useState('#26251e');
   const [hlColor, setHlColor] = useState('#ffe37a');
-  const [codeLang, setCodeLang] = useState('java');
+  // Table grid picker (Google-Docs style): hover an N×M region, click to insert.
+  const [tableMenuOpen, setTableMenuOpen] = useState(false);
+  const [tableHover, setTableHover] = useState({ r: 0, c: 0 });
+  const tableBtnRef = useRef<HTMLDivElement>(null);
   const liveMarkdown = useRef(''); // latest editor markdown, for copy/export/word count
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDelete = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const renameTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRename = useRef<{ id: string; title: string } | null>(null);
   const streamRef = useRef<HTMLDivElement>(null); // read-only pane for a streaming notch answer
   const searchRef = useRef<HTMLInputElement>(null);
   const renameRef = useRef<HTMLInputElement>(null);
@@ -163,6 +207,29 @@ function Notebook() {
   };
 
   const refresh = useCallback(async () => setNotes(await window.notebookAPI.list()), []);
+  const refreshTags = useCallback(async () => {
+    try { setAllTags(await window.notebookAPI.getAllTags()); } catch { /* ignore */ }
+  }, []);
+
+  // Persist a note's tags (frontmatter is source of truth → main writes the .md + reindexes),
+  // then refresh the list (chips) and the distinct-tag suggestions.
+  const saveTags = useCallback(async (id: string, tags: string[]) => {
+    await window.notebookAPI.setTags(id, tags).catch(() => {});
+    await refresh();
+    refreshTags();
+  }, [refresh, refreshTags]);
+
+  // Persist any pending title rename now (debounce timer, note switch, or unmount), keyed to the
+  // note it came from. Same 400ms idiom as NotebookEditor.onUpdate — rename does a full file
+  // rewrite + FTS reindex + sidebar refresh, so we don't fire it per keystroke.
+  const flushRename = useCallback(() => {
+    if (renameTimer.current) { clearTimeout(renameTimer.current); renameTimer.current = null; }
+    const p = pendingRename.current;
+    if (!p) return;
+    pendingRename.current = null;
+    window.notebookAPI.rename(p.id, p.title).then(refresh).catch(() => {});
+  }, [refresh]);
+
   const refreshFolders = useCallback(async () => {
     const st = await window.notebookAPI.foldersGet();
     setFolders(st.folders);
@@ -195,6 +262,7 @@ function Notebook() {
   }, []);
 
   const selectNote = useCallback(async (id: string, fromList?: NoteSummary[]) => {
+    flushRename(); // commit any pending rename to the OUTGOING note before we switch away
     streamingRef.current = false;
     setStreaming('idle');
     setView('notes');
@@ -210,11 +278,11 @@ function Notebook() {
     if (selectedRef.current !== id) return; // selection changed while loading
     loadEditor(note?.body ?? '', note?.aiBlocks ?? []);
     setImage(img);
-  }, [notes, loadEditor]);
+  }, [notes, loadEditor, flushRename]);
 
   useEffect(() => {
     (async () => {
-      const [list] = await Promise.all([window.notebookAPI.list(), refreshFolders()]);
+      const [list] = await Promise.all([window.notebookAPI.list(), refreshFolders(), refreshTags()]);
       setNotes(list);
       if (list.length) selectNote(list[0].id, list);
     })();
@@ -237,6 +305,7 @@ function Notebook() {
       streamingRef.current = false; setStreaming('idle');
       const list = await window.notebookAPI.list();
       setNotes(list);
+      refreshTags(); // a captured note may carry auto tags (sourceApp/language)
       selectNote(id, list); // load the freshly-saved note into the editor
     });
     const offSettings = window.notebookAPI.onShowSettings(() => setView('settings'));
@@ -262,8 +331,11 @@ function Notebook() {
   useEffect(() => { if (renamingFolder) { renameRef.current?.focus(); renameRef.current?.select(); } }, [renamingFolder]);
 
   function onTitleChange(v: string) {
-    setTitle(v);
-    if (selectedId) window.notebookAPI.rename(selectedId, v).then(refresh).catch(() => {});
+    setTitle(v); // immediate: the input is controlled
+    if (!selectedId) return;
+    pendingRename.current = { id: selectedId, title: v };
+    if (renameTimer.current) clearTimeout(renameTimer.current);
+    renameTimer.current = setTimeout(flushRename, 400);
   }
 
   const closeActions = () => setActionTarget(null);
@@ -278,6 +350,13 @@ function Notebook() {
     window.notebookAPI.setPinned(n.id, !n.pinned).then(refresh).catch(() => {});
   }
 
+  // Filter the sidebar to a tag (open the sidebar so the result is visible).
+  function applyTagFilter(tag: string) {
+    setTagFilter(tag);
+    setSidebarOpen(true);
+    localStorage.setItem('nb-sidebar', 'open');
+  }
+
   // Commit any pending (toast-window) delete for real — removes the file.
   const commitDelete = useCallback(() => {
     const p = pendingDelete.current;
@@ -289,6 +368,35 @@ function Notebook() {
 
   // Finalize a pending (toast-window) delete if the window closes before the timer fires.
   useEffect(() => commitDelete, [commitDelete]);
+
+  // Flush a pending title rename if the window closes before its debounce fires.
+  useEffect(() => flushRename, [flushRename]);
+
+  // Close the table grid picker on an outside click.
+  useEffect(() => {
+    if (!tableMenuOpen) return;
+    function onDown(e: MouseEvent) {
+      if (tableBtnRef.current && !tableBtnRef.current.contains(e.target as Node)) setTableMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [tableMenuOpen]);
+
+  // External edits to the on-disk .md files aren't noticed until relaunch — re-sync from disk on
+  // window focus so returning to the app picks them up. Debounced, and skipped while a notch
+  // answer is streaming so we don't fight an in-progress write.
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const onFocus = () => {
+      if (streamingRef.current) return;
+      if (t) clearTimeout(t);
+      t = setTimeout(async () => {
+        try { setNotes(await window.notebookAPI.resync()); } catch { /* ignore */ }
+      }, 250);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => { if (t) clearTimeout(t); window.removeEventListener('focus', onFocus); };
+  }, []);
 
   // Brief auto-dismissing status toast (no Undo button).
   const showInfo = useCallback((msg: string) => {
@@ -361,8 +469,13 @@ function Notebook() {
   function applyColor(hex: string) { setTextColor(hex); editor?.chain().focus().setColor(hex).run(); }
   function toggleHighlight() { editor?.chain().focus().toggleHighlight({ color: hlColor }).run(); }
   function applyHlColor(hex: string) { setHlColor(hex); editor?.chain().focus().setHighlight({ color: hex }).run(); }
-  function toggleCode() { editor?.chain().focus().toggleCodeBlock().updateAttributes('codeBlock', { language: codeLang }).run(); }
-  function applyCodeLang(lang: string) { setCodeLang(lang); editor?.chain().focus().updateAttributes('codeBlock', { language: lang }).run(); }
+  // Language is picked on the block itself (in-block dropdown, see code-block-view); the
+  // toolbar button just toggles the block into/out of code.
+  function toggleCode() { editor?.chain().focus().toggleCodeBlock().run(); }
+  function insertTable(rows: number, cols: number) {
+    editor?.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run();
+    setTableMenuOpen(false);
+  }
 
   function closeSearch() { setSearchOpen(false); setQuery(''); setResults(null); }
 
@@ -376,7 +489,7 @@ function Notebook() {
       const byId = new Map(notes.map((n) => [n.id, n]));
       setResults(hits.map((h) => {
         const n = byId.get(h.id);
-        return { id: h.id, title: n?.title ?? h.snippet, snippet: h.snippet, sourceApp: n?.sourceApp, model: n?.model, pinned: n?.pinned ?? false, createdAt: n?.createdAt ?? '' };
+        return { id: h.id, title: n?.title ?? h.snippet, snippet: h.snippet, tags: n?.tags ?? h.tags ?? [], sourceApp: n?.sourceApp, model: n?.model, pinned: n?.pinned ?? false, createdAt: n?.createdAt ?? '' };
       }));
     }, 180);
   }
@@ -459,6 +572,19 @@ function Notebook() {
       <div className="body">
         <div className="title">{n.title || 'Untitled'}</div>
         <div className="meta">{n.createdAt && relTime(n.createdAt) ? `${relTime(n.createdAt)} · ` : ''}{n.snippet}</div>
+        {n.tags.length > 0 && (
+          <div className="row-tags">
+            {n.tags.slice(0, 3).map((t) => (
+              <button
+                key={t}
+                className={`row-tag${tagFilter && t.toLowerCase() === tagFilter.toLowerCase() ? ' active' : ''}`}
+                onClick={(e) => { e.stopPropagation(); applyTagFilter(t); }}
+                title={`Show notes tagged “${t}”`}
+              >{t}</button>
+            ))}
+            {n.tags.length > 3 && <span className="row-tag-more">+{n.tags.length - 3}</span>}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -518,6 +644,10 @@ function Notebook() {
 
   const rootFolders = childFolders(null);
   const rootNotes = notesInFolder(null);
+  // When a tag filter is active the folder tree is bypassed for a flat list of matching notes.
+  const filteredNotes = tagFilter
+    ? notes.filter((n) => n.tags.some((t) => t.toLowerCase() === tagFilter.toLowerCase()))
+    : null;
 
   // Metadata for the header line under the title (only for a saved, selected note).
   const current = selectedId ? notes.find((n) => n.id === selectedId) : null;
@@ -595,7 +725,19 @@ function Notebook() {
           onContextMenu={(e) => { if (!(e.target as HTMLElement).closest('.note-row, .folder-row, button, input')) { e.preventDefault(); setMenuPos({ x: e.clientX, y: e.clientY }); setCreateOpen(true); } }}
           title="Two-finger click empty space to create a note or folder"
         >
-          {notes.length === 0 && folders.length === 0 ? (
+          {tagFilter ? (
+            <>
+              <div className="tag-filter-bar">
+                <span className="tfb-label">Tagged <span className="tag-chip static">{tagFilter}</span></span>
+                <button className="tfb-clear" onClick={() => setTagFilter(null)} title="Show all notes">All notes</button>
+              </div>
+              {filteredNotes && filteredNotes.length ? (
+                filteredNotes.map((n) => renderNoteRow(n, 0))
+              ) : (
+                <div className="folder-empty" style={{ paddingLeft: 9 }}>No notes with this tag.</div>
+              )}
+            </>
+          ) : notes.length === 0 && folders.length === 0 ? (
             <div className="empty-list">No notes yet.<br />Two-finger click here to make a note or folder, or capture text.</div>
           ) : (
             <>
@@ -657,6 +799,16 @@ function Notebook() {
             <span className="nm-dot">·</span><span>{words} {words === 1 ? 'word' : 'words'}</span>
           </div>
         )}
+        {current && streaming !== 'streaming' && (
+          <div className="tag-row">
+            <TagEditor
+              tags={current.tags}
+              allTags={allTags}
+              onChange={(t) => saveTags(current.id, t)}
+              onFilter={applyTagFilter}
+            />
+          </div>
+        )}
         {image && (
           <figure className="capture">
             <figcaption className="capture-cap">
@@ -671,6 +823,12 @@ function Notebook() {
             // Read-only pane while a notch answer streams in (becomes a saved note on done).
             <div ref={streamRef} className="editor streaming-pane" />
           ) : (
+            // ponytail: userCommands intentionally not passed → slash menu shows built-ins only.
+            // Custom commands are stored (settings-service.getCustomPresets / customPresets) but
+            // have no IPC channel to reach this renderer and no settings UI to create them, so
+            // nothing can populate them yet. Built-ins all resolve, so no misleading "couldn't
+            // reach model" error is reachable. Wire userCommands once a custom-command settings UI
+            // + a settings:get-custom-presets IPC exist.
             <NotebookEditor
               key={editorKey}
               noteId={selectedId}
@@ -693,10 +851,27 @@ function Notebook() {
           {editor && (
             <>
               <span className="sep" />
-              <button className={`ico${editor.isActive('codeBlock') ? ' active' : ''}`} onClick={toggleCode} title="Code block (syntax highlighted)">{Ico.code}</button>
-              <select className="tb-lang" value={codeLang} onChange={(e) => applyCodeLang(e.target.value)} title="Code language">
-                {CODE_LANGS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
-              </select>
+              <button className={`ico${editor.isActive('codeBlock') ? ' active' : ''}`} onClick={toggleCode} title="Code block (pick language on the block)">{Ico.code}</button>
+              <div className="tb-table" ref={tableBtnRef}>
+                <button className={`ico${editor.isActive('table') ? ' active' : ''}`} onClick={() => setTableMenuOpen((v) => !v)} title="Insert table">{Ico.table}</button>
+                {tableMenuOpen && (
+                  <div className="grid-pop" onMouseLeave={() => setTableHover({ r: 0, c: 0 })}>
+                    <div className="grid">
+                      {Array.from({ length: 6 }).map((_, r) =>
+                        Array.from({ length: 8 }).map((_, c) => (
+                          <span
+                            key={`${r}-${c}`}
+                            className={`gcell${r <= tableHover.r && c <= tableHover.c ? ' on' : ''}`}
+                            onMouseEnter={() => setTableHover({ r, c })}
+                            onMouseDown={(e) => { e.preventDefault(); insertTable(r + 1, c + 1); }}
+                          />
+                        ))
+                      )}
+                    </div>
+                    <div className="grid-label">{tableHover.c + 1} × {tableHover.r + 1}</div>
+                  </div>
+                )}
+              </div>
               <label className="color-btn" title="Text color">
                 <span className="color-dot" style={{ background: textColor }} />
                 <input type="color" value={textColor} onChange={(e) => applyColor(e.target.value)} />

@@ -13,8 +13,9 @@ import Paperclip from 'lucide-react/dist/esm/icons/paperclip';
 import CornerDownLeft from 'lucide-react/dist/esm/icons/corner-down-left';
 import ArrowUpRight from 'lucide-react/dist/esm/icons/arrow-up-right';
 import Check from 'lucide-react/dist/esm/icons/check';
+import Copy from 'lucide-react/dist/esm/icons/copy';
 import X from 'lucide-react/dist/esm/icons/x';
-import { decideEscapeAction, decideBlurAction, reconcilePick, draftAfter, statusAfterDismiss } from './panel-dismiss';
+import { decideEscapeAction, decideBlurAction, reconcilePick, draftAfter, statusAfterDismiss, classifyFireOutcome } from './panel-dismiss';
 import './panel.css';
 
 interface PanelQueryRequest {
@@ -36,6 +37,7 @@ interface LlamasAPI {
   listModels: () => Promise<string[]>;
   getDefaults: () => Promise<{ text?: string; vision?: string }>;
   setDefaultModel: (kind: 'text' | 'vision', model: string) => Promise<void>;
+  copyText: (text: string) => void;
   openNotebook: () => void;
   openSettings: () => void;
   pickFiles: () => Promise<Array<{ path: string; name: string }>>;
@@ -99,6 +101,8 @@ function Panel() {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState('');
   const [answer, setAnswer] = useState('');
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const islandRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
@@ -125,6 +129,10 @@ function Panel() {
   // True while a native picker/screenshot/OCR is open — those blur the window legitimately
   // and must NOT trigger the window-blur dismiss.
   const captureInFlightRef = useRef(false);
+  // Monotonic id stamped on each fire(). When a query settles we compare it to the latest id
+  // and drop the result if a newer fire has since started (mirrors the server-side run-id guard),
+  // so a late/superseded result can't paint over the run the panel is now showing.
+  const fireRunId = useRef(0);
   expandedRef.current = expanded;
   selectionRef.current = selection;
 
@@ -249,12 +257,26 @@ function Panel() {
     setError('');
     setAnswer('');
     setStatus('running');
-    const res = await window.llamasAPI.runQuery({
-      ...req,
-      userSelectedModel: model || undefined,
-      attachments: attachments.length ? attachments.map((a) => a.path) : undefined,
-    });
-    if (res.ok) {
+    const myRunId = ++fireRunId.current;
+    let res: PanelQueryResult;
+    try {
+      res = await window.llamasAPI.runQuery({
+        ...req,
+        userSelectedModel: model || undefined,
+        attachments: attachments.length ? attachments.map((a) => a.path) : undefined,
+      });
+    } catch (err) {
+      // The IPC invoke itself rejected (main threw before returning a result). Feed it through
+      // the same run-id guard as a synthetic failure so a hard reject surfaces an error instead
+      // of leaving the panel stuck on 'running' forever.
+      res = { ok: false, error: err instanceof Error ? err.message : 'Something went wrong' };
+    }
+    const outcome = classifyFireOutcome({ superseded: fireRunId.current !== myRunId, ok: res.ok, error: res.error });
+    // 'ignore' (a newer fire took over) and 'cancelled' (main deliberately superseded/closed
+    // this run and already suppressed its error) are both no-ops — the current owner of the UI
+    // state, a newer run or a fresh capture, keeps the status.
+    if (outcome === 'ignore' || outcome === 'cancelled') return;
+    if (outcome === 'success') {
       setAnswer(res.answer ?? '');
       setStatus('done');
       // The draft did its job — clear it so the next open starts fresh.
@@ -323,6 +345,13 @@ function Panel() {
   // % of a rough context budget (~8000 chars) the selection fills; min 1% when non-empty.
   const ctxPct = hasSelection ? Math.max(1, Math.min(100, Math.round((selChars / 8000) * 100))) : 0;
   const busy = status === 'running';
+  // Copy the queued selection to the clipboard (notch-as-clipboard) with a brief check.
+  const copySelection = useCallback(() => {
+    window.llamasAPI.copyText(selection);
+    setCopied(true);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(false), 1200);
+  }, [selection]);
   // The arrow-top-right button opens the notebook. Icon-only while working; labelled "Open" once done.
   const openBtn = (label: boolean) => (
     <button className={`box-open${label ? '' : ' icon-only'}`} title="Open in notebook" onClick={() => window.llamasAPI.openNotebook()}>
@@ -453,6 +482,13 @@ function Panel() {
               <div className={`box ${status === 'idle' ? (hasSelection ? 'has-sel' : 'is-empty') : 'active'} s-${status}`}>
                 {status === 'running' && openBtn(false)}
                 {status === 'done' && openBtn(true)}
+                {status === 'idle' && hasSelection && (
+                  <button
+                    className="box-copy"
+                    onClick={copySelection}
+                    title={copied ? 'Copied' : 'Copy selection'}
+                  >{copied ? <Check size={14} /> : <Copy size={14} />}</button>
+                )}
 
                 {status === 'running' ? (
                   <div className="sel-hint"><span className="working">Working…</span></div>

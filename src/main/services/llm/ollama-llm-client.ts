@@ -12,6 +12,9 @@ import { readStreamErrorMessage } from './stream-error';
 
 const BASE_URL = 'http://127.0.0.1:11434';
 const TIMEOUT_MS = 300000;
+// A pull has no overall deadline (large models take a while), but if no chunk arrives for
+// this long the connection is wedged — reject instead of hanging forever on timeout:0.
+const PULL_IDLE_MS = 60000;
 
 export class OllamaLlmClient implements LlmClient {
   /** List locally installed model names (for the panel's model picker). Empty on failure. */
@@ -46,7 +49,27 @@ export class OllamaLlmClient implements LlmClient {
     const res = await axios.post(`${BASE_URL}/api/pull`, { name, stream: true }, { responseType: 'stream', timeout: 0 });
     return await new Promise<void>((resolve, reject) => {
       let buffer = '';
+      let settled = false;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      // Terminate on the first terminal event: stop the socket, clear the idle timer, and
+      // detach — so an {error} line stops buffering and a stalled pull can't hang forever.
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (idleTimer) clearTimeout(idleTimer);
+        res.data.destroy();
+        fn();
+      };
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(
+          () => finish(() => reject(new Error(`Ollama pull stalled (no progress for ${PULL_IDLE_MS / 1000}s).`))),
+          PULL_IDLE_MS,
+        );
+      };
+      resetIdle();
       res.data.on('data', (chunk: Buffer) => {
+        resetIdle();
         buffer += chunk.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
@@ -56,12 +79,14 @@ export class OllamaLlmClient implements LlmClient {
             const d = JSON.parse(line);
             const pct = d.total ? Math.round((d.completed ?? 0) / d.total * 100) : 0;
             onProgress?.(String(d.status ?? ''), pct);
-            if (d.error) reject(new Error(d.error));
+            // Ollama reports pull failures as an {"error":...} line over HTTP 200; reject and
+            // stop rather than continuing to buffer to a false "success" at stream end.
+            if (d.error) { finish(() => reject(new Error(d.error))); return; }
           } catch { /* skip */ }
         }
       });
-      res.data.on('end', () => resolve());
-      res.data.on('error', (e: Error) => reject(new Error(`Ollama pull error: ${e.message}`)));
+      res.data.on('end', () => finish(() => resolve()));
+      res.data.on('error', (e: Error) => finish(() => reject(new Error(`Ollama pull error: ${e.message}`))));
     });
   }
 

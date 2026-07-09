@@ -1,5 +1,8 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, systemPreferences, shell, dialog } from 'electron';
-import { join, extname, basename } from 'path';
+import { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, systemPreferences, shell, dialog, clipboard } from 'electron';
+import type { IpcMainInvokeEvent, IpcMainEvent } from 'electron';
+import { autoUpdater } from 'electron-updater';
+import { join, extname, basename, resolve, sep } from 'path';
+import { pathToFileURL } from 'url';
 import { randomUUID } from 'crypto';
 import { rmSync, existsSync, readFileSync, statSync } from 'fs';
 import { OllamaProcessService } from './services/ollama-process.service';
@@ -30,6 +33,28 @@ import { BUILT_IN_PRESETS } from './services/presets/presets';
 
 const DEFAULT_TEXT_MODEL = 'mistral:latest';
 const VISION_MODEL = 'llava:latest';
+
+// Sanitize a renderer-supplied tag list before it reaches frontmatter. Tags can originate
+// from the model/clipboard, so coerce to trimmed non-empty strings, cap each tag's length
+// and the total count, and dedupe case-insensitively (first-seen casing wins).
+const MAX_TAG_LEN = 64;
+const MAX_TAGS = 50;
+function sanitizeTags(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== 'string') continue;
+    const tag = raw.trim().slice(0, MAX_TAG_LEN);
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+    if (out.length >= MAX_TAGS) break;
+  }
+  return out;
+}
 
 // ── Llamas Remote main process ───────────────────────────────────────────────
 //
@@ -64,6 +89,9 @@ class MainProcess {
   private inlineGen: InlineGenerationSession | null = null;
   private captureProvider: CaptureProvider | null = null;
   private notebookStore: NotebookStore | null = null;
+  // Absolute path to the notebook images dir; note `image:` reads are confined to it so an
+  // externally-edited frontmatter path can't base64 an arbitrary file back to the renderer.
+  private notebookImagesDir = '';
   private folderStore: FolderStore | null = null;
   private llmClient: OllamaLlmClient | null = null;
   private settingsService: SettingsService | null = null;
@@ -74,9 +102,6 @@ class MainProcess {
 
   async initialize(): Promise<void> {
     await app.whenReady();
-
-    // Start Ollama automatically (auto-install/start handled by the service).
-    await this.startOllamaIfNeeded();
 
     // Wire the notch panel stack (capture + controller + notebook).
     this.setupNotch();
@@ -91,6 +116,12 @@ class MainProcess {
     }
     this.setupNotchIpc();
     this.handleAppLifecycle();
+    this.setupAutoUpdate();
+
+    // Start Ollama automatically (auto-install/start handled by the service). Fire-and-forget
+    // AFTER the UI exists — the model pull can take minutes, and awaiting it here left first
+    // launch with no tray/notch until it finished.
+    void this.startOllamaIfNeeded();
 
     // No dock icon — this is a menu-bar utility.
     if (process.platform === 'darwin') app.dock?.hide();
@@ -98,10 +129,43 @@ class MainProcess {
     console.log('Llamas Remote — initialized');
   }
 
+  // Defense-in-depth: every IPC handler goes through these wrappers so a message is only
+  // honored when its sender is one of our two known windows. This backstops the navigation
+  // lock in hardenWindow — if a single renderer-side primitive or a future loosened window
+  // ever let a foreign frame reach here, it still can't read/delete notes, overwrite API
+  // keys, or run models. IPC only ever originates from a live renderer, so a legitimate call
+  // always matches one of these webContents.
+  private isTrustedSender(e: IpcMainInvokeEvent | IpcMainEvent): boolean {
+    const wc = e.sender;
+    return (!!this.notchPanel && wc === this.notchPanel.webContents)
+      || (!!this.notebookWindow && wc === this.notebookWindow.webContents);
+  }
+
+  private ipcHandle(channel: string, listener: (...args: any[]) => any): void {
+    ipcMain.handle(channel, (e, ...args) => {
+      if (!this.isTrustedSender(e)) {
+        console.warn(`[ipc] blocked '${channel}' from untrusted sender`);
+        throw new Error('Untrusted IPC sender');
+      }
+      return listener(e, ...args);
+    });
+  }
+
+  private ipcOn(channel: string, listener: (...args: any[]) => void): void {
+    ipcMain.on(channel, (e, ...args) => {
+      if (!this.isTrustedSender(e)) {
+        console.warn(`[ipc] blocked '${channel}' from untrusted sender`);
+        return;
+      }
+      listener(e, ...args);
+    });
+  }
+
   private setupNotch(): void {
     try {
       const userData = app.getPath('userData');
       const notebookDir = join(userData, 'notebook');
+      this.notebookImagesDir = join(notebookDir, 'images');
 
       // One-time HTML→Markdown body migration (backup-first, idempotent). Runs BEFORE the
       // index rebuild so reconcile re-indexes from migrated Markdown, not stale HTML.
@@ -183,10 +247,16 @@ class MainProcess {
       if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
       return { action: 'deny' };
     });
+    // The only file:// URLs we ever load are these two bundled pages (see createNotchPanel /
+    // createNotebookWindow). Allowing the bare file:// scheme would let injected/app code load
+    // ANY local file with the preload bridge attached — so pin the allow to these exact hrefs.
+    const allowedPages = new Set(
+      ['panel.html', 'notebook.html'].map((f) => pathToFileURL(join(__dirname, '..', f)).href),
+    );
     const guard = (e: Electron.Event, url: string): void => {
-      // Allow only in-app navigation/reload of the bundled file:// page; externalize web
-      // links, block everything else.
-      if (url.startsWith('file://')) return;
+      // Allow only in-app navigation/reload of our own bundled pages (ignore hash/query);
+      // externalize web links, block everything else.
+      if (allowedPages.has(url.split(/[?#]/)[0])) return;
       e.preventDefault();
       if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
     };
@@ -359,6 +429,8 @@ class MainProcess {
         { label: 'Notebook', click: () => this.showNotebook() },
         { label: 'Settings…', click: () => this.showSettings() },
         { type: 'separator' },
+        { label: 'Check for Updates…', click: () => this.checkForUpdatesManually() },
+        { type: 'separator' },
         { label: 'Quit Llamas Remote', click: () => app.quit() },
       ]);
       this.tray.setContextMenu(menu);
@@ -371,6 +443,63 @@ class MainProcess {
   private toggleNotch(): void {
     // The island always hangs from the notch; tray/activate just pops it open.
     this.handleNotchHotkey();
+  }
+
+  // ── Auto-update ────────────────────────────────────────────────────────────────────────
+  // Whether a downloaded update is staged and waiting for the next quit to install.
+  private updateReady = false;
+  // Set while a user-initiated "Check for Updates…" is in flight, so the (otherwise silent)
+  // update events surface a dialog only for the manual path — the launch check stays quiet.
+  private manualCheck = false;
+
+  // Wire electron-updater: check the GitHub release feed on launch, download in the
+  // background, and install on quit. NOTE: on macOS this only works for a SIGNED + notarized
+  // build (electron-updater verifies the signature); an unsigned build silently no-ops. See
+  // RELEASING.md for the signing/publish setup.
+  private setupAutoUpdate(): void {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('error', (err: Error) => {
+      console.warn('[auto-update] error:', err?.message ?? err);
+      if (this.manualCheck) { this.manualCheck = false; this.updateDialog('warning', 'Could not check for updates.', String(err?.message ?? err)); }
+    });
+    autoUpdater.on('update-not-available', () => {
+      if (this.manualCheck) { this.manualCheck = false; this.updateDialog('info', "You're up to date.", `Llamas Remote ${app.getVersion()} is the latest version.`); }
+    });
+    autoUpdater.on('update-available', () => {
+      if (this.manualCheck) { this.manualCheck = false; this.updateDialog('info', 'Downloading update…', 'It will install the next time you quit Llamas Remote.'); }
+    });
+    autoUpdater.on('update-downloaded', (info: { version: string }) => {
+      this.updateReady = true;
+      this.tray?.setToolTip(`Llamas Remote — update ${info.version} ready (restart to install)`);
+    });
+    // Dev builds have no update feed (and no app-update.yml); only check when packaged.
+    if (app.isPackaged) {
+      autoUpdater.checkForUpdatesAndNotify().catch((e) => console.warn('[auto-update] initial check failed:', e?.message ?? e));
+    }
+  }
+
+  private checkForUpdatesManually(): void {
+    if (!app.isPackaged) {
+      this.updateDialog('info', 'Updates unavailable in development', 'Run the installed app to receive updates.');
+      return;
+    }
+    if (this.updateReady) {
+      dialog
+        .showMessageBox({ type: 'info', message: 'Update ready', detail: 'Restart Llamas Remote to install the downloaded update.', buttons: ['Restart Now', 'Later'], defaultId: 0, cancelId: 1 })
+        .then(({ response }) => { if (response === 0) setImmediate(() => autoUpdater.quitAndInstall()); })
+        .catch(() => {});
+      return;
+    }
+    this.manualCheck = true;
+    autoUpdater.checkForUpdates().catch((e) => {
+      this.manualCheck = false;
+      this.updateDialog('warning', 'Could not check for updates.', String(e?.message ?? e));
+    });
+  }
+
+  private updateDialog(type: 'info' | 'warning', message: string, detail: string): void {
+    dialog.showMessageBox({ type, message, detail, buttons: ['OK'] }).catch(() => {});
   }
 
   // The notebook is the content window: a normal resizable window where answers stream in.
@@ -471,7 +600,7 @@ class MainProcess {
   }
 
   private setupNotchIpc(): void {
-    ipcMain.handle('panel:run-query', async (_event, req: {
+    this.ipcHandle('panel:run-query', async (_event, req: {
       kind: 'text' | 'image';
       presetId?: string;
       freeText?: string;
@@ -523,9 +652,11 @@ class MainProcess {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         // A cancelled run was superseded/closed deliberately — don't flash an error.
-        // Match the explicit 'cancelled' marker AND any stream-level cancel that landed
-        // after the signal aborted (axios surfaces those as "...stream error: canceled").
-        const wasCancelled = message === 'cancelled' || signal.aborted || /cancell?ed/i.test(message);
+        // Our clients throw the literal 'cancelled' marker, and `signal.aborted` is true for
+        // any cancel WE initiated. We deliberately do NOT text-match the message: a provider
+        // stream that reports "...canceled" while signal.aborted is false is a genuine failure
+        // (e.g. an ECONNRESET surfaced as "canceled") and must reach the user.
+        const wasCancelled = message === 'cancelled' || signal.aborted;
         if (!wasCancelled) {
           session.emit(runId, 'notebook:error', message);
           if (req.autoOpen !== false) this.showNotebook();
@@ -543,7 +674,7 @@ class MainProcess {
 
     // Let the panel attach files: open a native picker and hand back the chosen paths +
     // display names (the panel can't touch the filesystem). Contents are read at run time.
-    ipcMain.handle('panel:pick-files', async () => {
+    this.ipcHandle('panel:pick-files', async () => {
       const win = this.notchPanel ?? undefined;
       const result = win
         ? await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] })
@@ -558,13 +689,19 @@ class MainProcess {
     // On-demand capture when the panel opens (hover/click), while the source app is still
     // frontmost. The panel becomes mouse-interactive without taking key focus, so a
     // synthetic Cmd+C still targets the app the user was in.
-    ipcMain.handle('panel:capture', async () => {
+    this.ipcHandle('panel:capture', async () => {
       if (!this.captureProvider) return { selection: '', sourceApp: undefined, empty: true };
       try {
         // Hover-open is passive: do the native AX read only, never inject a synthetic Cmd+C
         // just because the panel opened. The hotkey path (handleNotchHotkey) allows the
         // clipboard fallback because it's an explicit user action.
         const r = await this.captureProvider.captureSelection({ allowClipboardFallback: false });
+        // Passive AX read comes back empty when Accessibility isn't granted — the same silent
+        // null the hotkey path guards against. Surface the permission prompt (once/session) so
+        // hover-open isn't just blank with no explanation. Stays passive: no synthetic Cmd+C.
+        if (r.text.trim().length === 0 && process.platform === 'darwin' && !isAccessibilityTrusted()) {
+          this.promptAccessibility();
+        }
         return { selection: r.text, sourceApp: r.sourceApp, empty: r.text.trim().length === 0 };
       } catch (e) {
         console.warn('panel:capture failed:', e);
@@ -574,20 +711,20 @@ class MainProcess {
     });
 
     // The panel's saved default models (so its picker reflects the Models-page choice).
-    ipcMain.handle('panel:defaults', () => {
+    this.ipcHandle('panel:defaults', () => {
       const s = this.settingsService?.get() ?? {};
       return { text: s.defaultTextModel, vision: s.defaultVisionModel };
     });
 
     // Renderer handshake: the notebook view has mounted and attached its notebook:* listeners.
     // Flush anything buffered while it was loading (fixes the first-answer-invisible drop).
-    ipcMain.on('notebook:ready', () => this.streamSession?.markReady());
+    this.ipcOn('notebook:ready', () => this.streamSession?.markReady());
 
     // Inline generation from the notebook itself: a `/` command (or freeform prompt) runs
     // against a model and streams INTO a specific AI block in the open note. Distinct from
     // panel:run-query — it does NOT create a new note (persist:false) and uses notebook:gen-*
     // channels tagged with the target blockId so the renderer streams into the right block.
-    ipcMain.handle('notebook:generate', async (_event, req: {
+    this.ipcHandle('notebook:generate', async (_event, req: {
       blockId: string;
       commandId?: string;        // built-in slash-command (preset) id
       freeText?: string;         // custom prompt / typed follow-up
@@ -619,10 +756,12 @@ class MainProcess {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         // Suppress the error only when the run was deliberately cancelled (superseded/closed).
-        // Match the same signals the panel path does — an exact 'cancelled', an aborted
-        // signal, or a provider stream-level "...canceled". emit() itself also drops the
-        // event if this run was superseded, so a re-run's fresh block is never marked errored.
-        const wasCancelled = message === 'cancelled' || signal.aborted || /cancell?ed/i.test(message);
+        // Match the same signals the panel path does — an exact 'cancelled' marker or an
+        // aborted signal (both mean WE initiated the cancel). We deliberately do NOT text-match
+        // the message: a provider stream that reports "...canceled" while the signal never
+        // aborted is a real failure and must surface. emit() itself also drops the event if
+        // this run was superseded, so a re-run's fresh block is never marked errored.
+        const wasCancelled = message === 'cancelled' || signal.aborted;
         if (!wasCancelled) gen.emit(blockId, runId, 'notebook:gen-error', { blockId, message });
         return { ok: false, error: message };
       } finally {
@@ -631,10 +770,14 @@ class MainProcess {
     });
 
     // Open the notebook window immediately (the panel's Open button) to watch streaming.
-    ipcMain.on('open-notebook', () => this.showNotebook());
+    this.ipcOn('open-notebook', () => this.showNotebook());
+
+    // Copy the queued selection to the system clipboard (notch-as-clipboard). Native
+    // clipboard write, so it works even when the hover-opened panel isn't key-focused.
+    this.ipcOn('panel:copy', (_e, text: string) => clipboard.writeText(String(text ?? '')));
 
     // Model picker = local Ollama models + cloud models for providers whose key is set.
-    ipcMain.handle('panel:models', async () => {
+    this.ipcHandle('panel:models', async () => {
       const local = this.llmClient ? await this.llmClient.listModels() : [];
       const s = this.settingsService?.get() ?? {};
       const cloud = [
@@ -645,13 +788,13 @@ class MainProcess {
     });
 
     // Settings window + operations.
-    ipcMain.on('open-settings', () => this.showSettings());
-    ipcMain.handle('settings:get', () => this.settingsService?.getRedacted() ?? { openaiKeySet: false, anthropicKeySet: false, notchEnabled: true });
-    ipcMain.handle('settings:set-notch', (_e, enabled: boolean) => { this.applyNotchEnabled(!!enabled); });
-    ipcMain.handle('settings:set-key', (_e, provider: 'openai' | 'anthropic', key: string) => {
+    this.ipcOn('open-settings', () => this.showSettings());
+    this.ipcHandle('settings:get', () => this.settingsService?.getRedacted() ?? { openaiKeySet: false, anthropicKeySet: false, notchEnabled: true });
+    this.ipcHandle('settings:set-notch', (_e, enabled: boolean) => { this.applyNotchEnabled(!!enabled); });
+    this.ipcHandle('settings:set-key', (_e, provider: 'openai' | 'anthropic', key: string) => {
       this.settingsService?.setKey(provider, key);
     });
-    ipcMain.handle('ollama:pull', async (event, name: string) => {
+    this.ipcHandle('ollama:pull', async (event, name: string) => {
       if (!this.llmClient || !name.trim()) return { ok: false, error: 'No model name' };
       try {
         await this.llmClient.pullModel(name.trim(), (status, percent) => {
@@ -666,21 +809,39 @@ class MainProcess {
     // Notebook (notes app) operations. Every handler that takes an `id` validates it at the
     // boundary: the id becomes a filename downstream, so a renderer-supplied `../` or
     // absolute path must be rejected before it can read/delete files outside the notebook dir.
-    ipcMain.handle('notebook:list', () => this.notebookStore?.list() ?? []);
-    ipcMain.handle('notebook:search', (_e, query: string) => this.notebookStore?.search(query) ?? []);
-    ipcMain.handle('notebook:get', (_e, id: string) => (isValidEntryId(id) ? this.notebookStore?.getBody(id) ?? null : null));
+    this.ipcHandle('notebook:list', () => this.notebookStore?.list() ?? []);
+    // Cancel any in-flight inline generation (called on editor unmount so a run doesn't keep
+    // streaming into a block whose editor is gone).
+    this.ipcHandle('notebook:cancel-gen', () => { this.inlineGen?.abortAll(); });
+    // Re-read notes from disk and hand back the fresh summaries (called on window focus so
+    // external edits show up). Guarded — a sync failure returns whatever we have.
+    this.ipcHandle('notebook:resync', () => {
+      try {
+        this.notebookStore?.syncFromDisk();
+        return this.notebookStore?.list() ?? [];
+      } catch {
+        return [];
+      }
+    });
+    this.ipcHandle('notebook:search', (_e, query: string) => this.notebookStore?.search(query) ?? []);
+    this.ipcHandle('notebook:get', (_e, id: string) => (isValidEntryId(id) ? this.notebookStore?.getBody(id) ?? null : null));
     // Body + AI-block sidecar in one round trip, so the editor can reconstruct AI blocks on
     // load (anchors alone don't survive the markdown parse — see reconstruct.ts).
-    ipcMain.handle('notebook:get-note', (_e, id: string) => {
+    this.ipcHandle('notebook:get-note', (_e, id: string) => {
       if (!isValidEntryId(id) || !this.notebookStore) return null;
       const body = this.notebookStore.getBody(id);
       if (body === null) return null;
       return { body, aiBlocks: this.notebookStore.getAiBlocks(id) };
     });
-    ipcMain.handle('notebook:image', (_e, id: string) => {
+    this.ipcHandle('notebook:image', (_e, id: string) => {
       if (!isValidEntryId(id)) return null;
       const p = this.notebookStore?.getImagePath(id);
       if (!p || !existsSync(p)) return null;
+      // Confine to the notebook images dir: `image:` frontmatter is externally editable, so
+      // never base64 an arbitrary absolute path (e.g. ~/.ssh/id_rsa) back to the renderer.
+      const resolved = resolve(p);
+      const imagesRoot = this.notebookImagesDir ? resolve(this.notebookImagesDir) : '';
+      if (!imagesRoot || (resolved !== imagesRoot && !resolved.startsWith(imagesRoot + sep))) return null;
       try {
         const ext = extname(p).slice(1).toLowerCase() || 'png';
         const mime = ext === 'jpg' ? 'jpeg' : ext;
@@ -689,25 +850,34 @@ class MainProcess {
         return null;
       }
     });
-    ipcMain.handle('notebook:rename', (_e, id: string, title: string) => { if (isValidEntryId(id)) this.notebookStore?.rename(id, title); });
-    ipcMain.handle('notebook:pin', (_e, id: string, pinned: boolean) => { if (isValidEntryId(id)) this.notebookStore?.setPinned(id, pinned); });
-    ipcMain.handle('notebook:update-body', (_e, id: string, body: string, aiBlocks?: unknown) => {
+    this.ipcHandle('notebook:rename', (_e, id: string, title: string) => { if (isValidEntryId(id)) this.notebookStore?.rename(id, title); });
+    this.ipcHandle('notebook:pin', (_e, id: string, pinned: boolean) => { if (isValidEntryId(id)) this.notebookStore?.setPinned(id, pinned); });
+    // Replace a note's tag set. Tags are user/model/clipboard-sourced, so sanitize at the
+    // boundary: coerce to trimmed non-empty strings, cap length + count, and dedupe
+    // case-insensitively before it reaches frontmatter.
+    this.ipcHandle('notebook:set-tags', (_e, id: string, tags: unknown) => {
+      if (!isValidEntryId(id)) return;
+      this.notebookStore?.setTags(id, sanitizeTags(tags));
+    });
+    // Distinct tags across all live notes, for the tag filter list.
+    this.ipcHandle('notebook:all-tags', () => this.notebookStore?.getAllTags() ?? []);
+    this.ipcHandle('notebook:update-body', (_e, id: string, body: string, aiBlocks?: unknown) => {
       if (!isValidEntryId(id)) return;
       // Only touch the sidecar when the renderer actually sent blocks. Undefined = body-only
       // save (leave the sidecar alone); an array (even empty) = rewrite it (empty deletes it).
       const blocks = aiBlocks === undefined ? undefined : sanitizeIncomingBlocks(aiBlocks);
       this.notebookStore?.updateBody(id, body, blocks);
     });
-    ipcMain.handle('notebook:hide', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.hide(id); });
-    ipcMain.handle('notebook:restore', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.restore(id); });
-    ipcMain.handle('notebook:delete', (_e, id: string) => {
+    this.ipcHandle('notebook:hide', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.hide(id); });
+    this.ipcHandle('notebook:restore', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.restore(id); });
+    this.ipcHandle('notebook:delete', (_e, id: string) => {
       if (!isValidEntryId(id)) return;
       this.notebookStore?.delete(id);
       this.folderStore?.forgetNote(id);
     });
 
     // Create an empty note from the notebook UI (New note), optionally inside a folder.
-    ipcMain.handle('notebook:create', (_e, folderId?: string) => {
+    this.ipcHandle('notebook:create', (_e, folderId?: string) => {
       if (!this.notebookStore) return null;
       const id = randomUUID();
       this.notebookStore.save(makeEntry({ id, body: '', tags: [], model: '', sourceApp: '' }));
@@ -716,28 +886,34 @@ class MainProcess {
     });
 
     // ── Folder manifest (tree + note→folder assignments) ──────────────────────────────
-    ipcMain.handle('folders:get', () => this.folderStore?.getState() ?? { folders: [], assignments: {} });
-    ipcMain.handle('folders:create', (_e, name: string, parentId: string | null) => {
+    this.ipcHandle('folders:get', () => this.folderStore?.getState() ?? { folders: [], assignments: {} });
+    this.ipcHandle('folders:create', (_e, name: string, parentId: string | null) => {
       try { return this.folderStore?.createFolder(name, parentId ?? null) ?? null; }
       catch { return null; }
     });
-    ipcMain.handle('folders:rename', (_e, id: string, name: string) => { this.folderStore?.renameFolder(id, name); });
-    ipcMain.handle('folders:delete', (_e, id: string) => { this.folderStore?.deleteFolder(id); });
-    ipcMain.handle('folders:move-note', (_e, noteId: string, folderId: string | null) => {
-      if (isValidEntryId(noteId)) this.folderStore?.moveNote(noteId, folderId ?? null);
+    this.ipcHandle('folders:rename', (_e, id: string, name: string) => {
+      try { this.folderStore?.renameFolder(id, name); } catch { /* ignore */ }
     });
-    ipcMain.handle('folders:move-folder', (_e, id: string, parentId: string | null) => { this.folderStore?.moveFolder(id, parentId ?? null); });
+    this.ipcHandle('folders:delete', (_e, id: string) => {
+      try { this.folderStore?.deleteFolder(id); } catch { /* ignore */ }
+    });
+    this.ipcHandle('folders:move-note', (_e, noteId: string, folderId: string | null) => {
+      try { if (isValidEntryId(noteId)) this.folderStore?.moveNote(noteId, folderId ?? null); } catch { /* ignore */ }
+    });
+    this.ipcHandle('folders:move-folder', (_e, id: string, parentId: string | null) => {
+      try { this.folderStore?.moveFolder(id, parentId ?? null); } catch { /* ignore */ }
+    });
 
     // ── Custom window controls (native traffic lights are hidden) ─────────────────────
-    ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize());
-    ipcMain.on('win:zoom', (e) => {
+    this.ipcOn('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize());
+    this.ipcOn('win:zoom', (e) => {
       const w = BrowserWindow.fromWebContents(e.sender);
       if (!w) return;
       w.isMaximized() ? w.unmaximize() : w.maximize();
     });
-    ipcMain.on('win:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
+    this.ipcOn('win:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 
-    ipcMain.handle('panel:screenshot', async () => {
+    this.ipcHandle('panel:screenshot', async () => {
       if (this.screenshotInFlight) return null; // a capture is already up — don't overlap crosshairs
       this.screenshotInFlight = true;
       try {
@@ -759,7 +935,7 @@ class MainProcess {
 
     // Grab text from a screen region with NO model: screencapture -i, then on-device
     // Vision OCR. Sidesteps vision-model RAM cost entirely. Returns recognized text.
-    ipcMain.handle('panel:ocr', async () => {
+    this.ipcHandle('panel:ocr', async () => {
       if (this.screenshotInFlight) return { text: '', cancelled: true }; // capture already in flight
       this.screenshotInFlight = true;
       let shot: string | null = null;
@@ -782,7 +958,7 @@ class MainProcess {
 
     // Models page: installed models with size + RAM-fit badge + vision flag, plus cloud
     // models when a key is set. "fit" is a capacity estimate (see model-capability.ts).
-    ipcMain.handle('models:list-detailed', async () => {
+    this.ipcHandle('models:list-detailed', async () => {
       const totalRam = totalmem();
       const installed = this.llmClient ? await this.llmClient.listModelsDetailed() : [];
       const local = installed.map((m) => {
@@ -811,7 +987,7 @@ class MainProcess {
     });
 
     // Curated recommendations to pull, each with a RAM-fit badge and whether it's installed.
-    ipcMain.handle('models:catalog', async () => {
+    this.ipcHandle('models:catalog', async () => {
       const totalRam = totalmem();
       const installedNames = new Set(this.llmClient ? (await this.llmClient.listModels()) : []);
       // Ollama lists a bare `moondream` pull as `moondream:latest`, so a catalog id
@@ -825,7 +1001,7 @@ class MainProcess {
       }));
     });
 
-    ipcMain.handle('models:delete', async (_e, name: string) => {
+    this.ipcHandle('models:delete', async (_e, name: string) => {
       if (!this.llmClient || !name) return { ok: false, error: 'No model' };
       try {
         await this.llmClient.deleteModel(name);
@@ -835,14 +1011,14 @@ class MainProcess {
       }
     });
 
-    ipcMain.handle('models:set-default', (_e, kind: 'text' | 'vision', model: string) => {
+    this.ipcHandle('models:set-default', (_e, kind: 'text' | 'vision', model: string) => {
       this.settingsService?.setDefaultModel(kind, model);
       // Mutate the live router config so the next query routes to the new pick.
       if (kind === 'text') this.routerConfig.defaultTextModel = model.trim() || DEFAULT_TEXT_MODEL;
       else this.routerConfig.visionModel = model.trim() || VISION_MODEL;
     });
 
-    ipcMain.handle('panel:search', (_event, query: string) => {
+    this.ipcHandle('panel:search', (_event, query: string) => {
       if (!this.notebookStore) return [];
       try {
         return this.notebookStore.search(query);
@@ -853,14 +1029,14 @@ class MainProcess {
 
     // Renderer toggles interactivity as the pointer enters/leaves the island, so the
     // transparent canvas stays click-through everywhere else.
-    ipcMain.on('panel:set-interactive', (_event, interactive: boolean) => {
+    this.ipcOn('panel:set-interactive', (_event, interactive: boolean) => {
       if (this.notchPanel && !this.notchPanel.isDestroyed()) {
         this.notchPanel.setIgnoreMouseEvents(!interactive, { forward: true });
       }
     });
 
     // Collapse back to the idle island (does not hide — the island always hangs from the notch).
-    ipcMain.on('panel:close', () => {
+    this.ipcOn('panel:close', () => {
       if (this.notchPanel && !this.notchPanel.isDestroyed()) {
         this.notchPanel.webContents.send('panel:collapse');
         this.notchPanel.setIgnoreMouseEvents(true, { forward: true });
@@ -869,7 +1045,7 @@ class MainProcess {
 
     // Focus-on-engage: a hover-opened panel is interactive but never key, so Esc/blur
     // can't fire. When it runs an action it asks for focus so keyboard dismiss works.
-    ipcMain.on('panel:focus', () => {
+    this.ipcOn('panel:focus', () => {
       if (this.notchPanel && !this.notchPanel.isDestroyed()) this.notchPanel.focus();
     });
   }
