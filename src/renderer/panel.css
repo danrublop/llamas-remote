@@ -193,6 +193,8 @@ body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: anti
   border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface);
 }
 .box.is-empty { border-style: dashed; background: transparent; align-items: center; justify-content: center; }
+/* Hint states (working / error) stay centered, like the empty box was */
+.box.s-running, .box.s-error { align-items: center; justify-content: center; }
 .box.s-error { border-color: rgba(255,107,94,0.5); }
 
 /* Scrollable selected text / response */

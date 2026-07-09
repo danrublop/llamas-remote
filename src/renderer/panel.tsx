@@ -14,6 +14,7 @@ import CornerDownLeft from 'lucide-react/dist/esm/icons/corner-down-left';
 import ArrowUpRight from 'lucide-react/dist/esm/icons/arrow-up-right';
 import Check from 'lucide-react/dist/esm/icons/check';
 import X from 'lucide-react/dist/esm/icons/x';
+import { decideEscapeAction, decideBlurAction, reconcilePick, draftAfter, statusAfterDismiss } from './panel-dismiss';
 import './panel.css';
 
 interface PanelQueryRequest {
@@ -41,6 +42,7 @@ interface LlamasAPI {
   requestCapture: () => Promise<{ selection: string; sourceApp?: string; empty: boolean; error?: string }>;
   close: () => void;
   setInteractive: (on: boolean) => void;
+  focus: () => void;
   onCaptured: (cb: (data: PanelCaptured) => void) => () => void;
   onExpand: (cb: () => void) => () => void;
   onCollapse: (cb: () => void) => () => void;
@@ -104,8 +106,10 @@ function Panel() {
     window.llamasAPI.listModels().then((m) => {
       setModels(m);
       // Drop a stale explicit pick (model since uninstalled); do NOT auto-select the first
-      // model, so an empty pick lets the saved default drive routing.
-      setModel((cur) => (cur && m.includes(cur)) ? cur : '');
+      // model, so an empty pick lets the saved default drive routing. `models` state
+      // persists across collapse/expand (the panel never unmounts), so this background
+      // refresh updates the already-rendered list without a flash.
+      setModel((cur) => reconcilePick(cur, m));
     }).catch(() => {});
     // Pull the saved default so the picker can show it when there's no explicit pick.
     window.llamasAPI.getDefaults().then((d) => setDefaultModelState(d.text || '')).catch(() => {});
@@ -115,12 +119,26 @@ function Panel() {
   const pinnedRef = useRef(false);
   const interactiveRef = useRef(false);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mirrors `selection` for the async capture callbacks (so we can tell whether a freshly
+  // captured selection actually changed, to clear a stale draft). Same pattern as expandedRef.
+  const selectionRef = useRef('');
+  // True while a native picker/screenshot/OCR is open — those blur the window legitimately
+  // and must NOT trigger the window-blur dismiss.
+  const captureInFlightRef = useRef(false);
   expandedRef.current = expanded;
+  selectionRef.current = selection;
 
   const setInteractive = useCallback((on: boolean) => {
     if (interactiveRef.current === on) return;
     interactiveRef.current = on;
     window.llamasAPI.setInteractive(on);
+  }, []);
+
+  // Pin the panel open (don't auto-collapse on mouse-leave) AND grab keyboard focus, so a
+  // hover-opened panel — which is interactive but not key — can be dismissed by Esc/blur.
+  const pin = useCallback(() => {
+    pinnedRef.current = true;
+    window.llamasAPI.focus();
   }, []);
 
   const open = useCallback((doCapture = true) => {
@@ -135,8 +153,13 @@ function Panel() {
       refreshModels(); // pick up models pulled / keys added in Settings since last open
       if (doCapture) {
         window.llamasAPI.requestCapture().then((r) => {
+          // A different selection means a preserved draft was about the OLD selection —
+          // clear it so it can't leak onto this one. Same selection keeps the draft.
+          const changed = selectionRef.current !== r.selection;
           setSelection(r.selection);
           setSourceApp(r.sourceApp);
+          setFreeText((d) => draftAfter({ kind: 'capture', changed }, d));
+          if (changed) setAttachments([]);
           if (r.error) { setError(r.error); setStatus('error'); }
         }).catch(() => {});
       }
@@ -147,9 +170,11 @@ function Panel() {
     setExpanded(false);
     setInteractive(false);
     pinnedRef.current = false;
-    setStatus('idle');
-    setAttachments([]);
-    setFreeText('');
+    // Preserve the user's draft (freeText/attachments) across a melt-to-nub so an accidental
+    // dismiss doesn't lose a half-typed question; it's cleared on fire-success / new capture.
+    // Preserve `running` so reopening mid-stream still shows the working indicator (the
+    // answer keeps streaming into the notebook regardless of the panel).
+    setStatus((s) => statusAfterDismiss(s));
     setAnswer('');
     setTyping(false);
     setModelOpen(false);
@@ -186,19 +211,41 @@ function Panel() {
   useEffect(() => {
     refreshModels();
     const offCap = window.llamasAPI.onCaptured((data) => {
+      const changed = selectionRef.current !== data.selection;
       setSelection(data.selection);
       setSourceApp(data.sourceApp);
+      setFreeText((d) => draftAfter({ kind: 'capture', changed }, d));
+      if (changed) setAttachments([]);
       if (data.error) { setError(data.error); setStatus('error'); }
       else { setStatus('idle'); setError(''); }
     });
-    const offExpand = window.llamasAPI.onExpand(() => { pinnedRef.current = true; open(false); });
+    const offExpand = window.llamasAPI.onExpand(() => { pin(); open(false); });
     const offCollapse = window.llamasAPI.onCollapse(() => collapseNow());
     return () => { offCap(); offExpand(); offCollapse(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, collapseNow]);
+  }, [open, collapseNow, pin]);
+
+  // Reliable dismiss for the FOCUSED panel: Esc (two-stage) and renderer window-blur, both
+  // funneling into collapseNow (bypassing pinnedRef — these are explicit dismisses). The
+  // listener re-installs on [typing, expanded] so it always reads current state (one source
+  // of truth, no mirror refs). The capture guard keeps a native picker from self-dismissing.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const action = decideEscapeAction({ typing, expanded });
+      if (action === 'close-input') setTyping(false);
+      else if (action === 'collapse') collapseNow();
+    };
+    const onWindowBlur = () => {
+      if (decideBlurAction({ captureInFlight: captureInFlightRef.current }) === 'collapse') collapseNow();
+    };
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('blur', onWindowBlur);
+    return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('blur', onWindowBlur); };
+  }, [typing, expanded, collapseNow]);
 
   async function fire(req: PanelQueryRequest) {
-    pinnedRef.current = true;
+    pin();
     setError('');
     setAnswer('');
     setStatus('running');
@@ -207,19 +254,27 @@ function Panel() {
       userSelectedModel: model || undefined,
       attachments: attachments.length ? attachments.map((a) => a.path) : undefined,
     });
-    if (res.ok) { setAnswer(res.answer ?? ''); setStatus('done'); }
-    else { setError(res.error ?? 'Something went wrong'); setStatus('error'); }
+    if (res.ok) {
+      setAnswer(res.answer ?? '');
+      setStatus('done');
+      // The draft did its job — clear it so the next open starts fresh.
+      setFreeText((d) => draftAfter({ kind: 'fire-success' }, d));
+      setAttachments([]);
+    } else { setError(res.error ?? 'Something went wrong'); setStatus('error'); }
   }
 
   async function attachFiles() {
-    pinnedRef.current = true;
-    const picked = await window.llamasAPI.pickFiles();
-    if (!picked.length) return;
-    // De-dupe by path so re-picking the same file doesn't stack chips.
-    setAttachments((prev) => {
-      const seen = new Set(prev.map((a) => a.path));
-      return [...prev, ...picked.filter((p) => !seen.has(p.path))];
-    });
+    pin();
+    captureInFlightRef.current = true;
+    try {
+      const picked = await window.llamasAPI.pickFiles();
+      if (!picked.length) return;
+      // De-dupe by path so re-picking the same file doesn't stack chips.
+      setAttachments((prev) => {
+        const seen = new Set(prev.map((a) => a.path));
+        return [...prev, ...picked.filter((p) => !seen.has(p.path))];
+      });
+    } finally { captureInFlightRef.current = false; }
   }
 
   function runAction(presetId: string) {
@@ -231,8 +286,11 @@ function Panel() {
   }
 
   async function screenshot() {
-    pinnedRef.current = true;
-    const path = await window.llamasAPI.captureScreenshot();
+    pin();
+    captureInFlightRef.current = true;
+    let path: string | null = null;
+    try { path = await window.llamasAPI.captureScreenshot(); }
+    finally { captureInFlightRef.current = false; }
     if (path) fire({ kind: 'image', presetId: 'explain', imagePath: path });
   }
 
@@ -240,8 +298,11 @@ function Panel() {
   // becomes the queued selection, so you can then run a preset / ask a text model on it —
   // or just open it in the notebook. No vision model, no RAM cost.
   async function grabText() {
-    pinnedRef.current = true;
-    const res = await window.llamasAPI.ocrCapture();
+    pin();
+    captureInFlightRef.current = true;
+    let res: { text: string; cancelled?: boolean; error?: string };
+    try { res = await window.llamasAPI.ocrCapture(); }
+    finally { captureInFlightRef.current = false; }
     if (res.cancelled) return;
     if (res.error) { setError(res.error); setStatus('error'); return; }
     const text = res.text.trim();
@@ -318,6 +379,9 @@ function Panel() {
             </div>
             <span className="spacer" />
             <button className="ghost-btn icon-only" onClick={() => window.llamasAPI.openNotebook()} title="Open notebook"><NotebookText size={16} /></button>
+            {/* Focus-independent dismiss: always works even on a hover-opened (unfocused),
+                pinned panel where Esc/blur can't fire. This is the fix for "no way to close". */}
+            <button className="ghost-btn icon-only" onClick={() => collapseNow()} title="Close (Esc)"><X size={16} /></button>
             <CircleMeter pct={ctxPct} />
           </div>
 
@@ -328,7 +392,7 @@ function Panel() {
                 className={`cbtn ask${typing ? ' on' : ''}`}
                 disabled={busy}
                 title="Ask a question"
-                onClick={() => { setTyping((v) => !v); pinnedRef.current = true; setTimeout(() => typeInputRef.current?.focus(), 60); }}
+                onClick={() => { setTyping((v) => !v); pin(); setTimeout(() => typeInputRef.current?.focus(), 60); }}
               ><span className="qm">?</span></button>
               {ACTIONS.map((a) => (
                 <button key={a.id} className="cbtn" disabled={busy} title={a.name} onClick={() => runAction(a.id)}>
@@ -352,8 +416,9 @@ function Panel() {
                 value={freeText}
                 onChange={(e) => setFreeText(e.target.value)}
                 onKeyDown={(e) => {
+                  // Enter sends. Escape is handled by the document-level keydown listener
+                  // (stage-1 closes this input) so we don't double-handle it here.
                   if (e.key === 'Enter' && (freeText.trim() || attachments.length || selection.trim())) { fire({ kind: 'text', selection, sourceApp, freeText: freeText.trim() || undefined }); setTyping(false); }
-                  if (e.key === 'Escape') setTyping(false);
                 }}
               />
               <button
