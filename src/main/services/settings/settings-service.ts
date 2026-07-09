@@ -23,6 +23,8 @@ export interface AppSettings {
   defaultVisionModel?: string;
   /** User-defined slash commands (Exp-5). Stored plaintext (not secrets). */
   customPresets?: Preset[];
+  /** Whether the notch panel + its global shortcut are active. Defaults to on. */
+  notchEnabled?: boolean;
 }
 
 export class SettingsService {
@@ -38,6 +40,7 @@ export class SettingsService {
           defaultTextModel: raw.defaultTextModel,
           defaultVisionModel: raw.defaultVisionModel,
           customPresets: Array.isArray(raw.customPresets) ? raw.customPresets : [],
+          notchEnabled: raw.notchEnabled,
         };
         // Migrate any legacy plaintext keys to encrypted at rest, once.
         const hasLegacyPlaintext = [raw.openaiKey, raw.anthropicKey].some((v) => v && !v.startsWith('enc:'));
@@ -64,13 +67,24 @@ export class SettingsService {
   }
 
   /** Returns a redacted view (keys -> boolean "set") plus default model picks for the renderer. */
-  getRedacted(): { openaiKeySet: boolean; anthropicKeySet: boolean; defaultTextModel?: string; defaultVisionModel?: string } {
+  getRedacted(): { openaiKeySet: boolean; anthropicKeySet: boolean; defaultTextModel?: string; defaultVisionModel?: string; notchEnabled: boolean } {
     return {
       openaiKeySet: !!this.settings.openaiKey,
       anthropicKeySet: !!this.settings.anthropicKey,
       defaultTextModel: this.settings.defaultTextModel,
       defaultVisionModel: this.settings.defaultVisionModel,
+      notchEnabled: this.isNotchEnabled(),
     };
+  }
+
+  /** Whether the notch is active (defaults to on when unset). */
+  isNotchEnabled(): boolean {
+    return this.settings.notchEnabled !== false;
+  }
+
+  setNotchEnabled(enabled: boolean): void {
+    this.settings.notchEnabled = enabled;
+    this.save();
   }
 
   setKey(provider: 'openai' | 'anthropic', key: string): void {
@@ -123,6 +137,7 @@ export class SettingsService {
         defaultTextModel: this.settings.defaultTextModel,
         defaultVisionModel: this.settings.defaultVisionModel,
         customPresets: this.settings.customPresets ?? [],
+        notchEnabled: this.settings.notchEnabled,
       };
       // Atomic write: a crash mid-write must not truncate the real file (which would
       // wipe the encrypted keys on next launch). Write a temp file then rename over.
