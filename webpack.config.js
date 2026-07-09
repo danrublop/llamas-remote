@@ -63,8 +63,9 @@ module.exports = {
     compress: true,
     port: 3000,
   },
-  // Enable watching for file changes
-  watch: true,
+  // NOTE: no top-level `watch: true` here — it made every one-shot `webpack` / `npm run build`
+  // hang forever (compile, then sit watching, never exit). The `watch:renderer` script passes
+  // `--watch` explicitly when a watcher is actually wanted.
   watchOptions: {
     ignored: /node_modules/,
     aggregateTimeout: 300,

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, systemPreferences, shell, dialog } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, systemPreferences, shell, dialog, clipboard } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { join, extname, basename } from 'path';
 import { pathToFileURL } from 'url';
@@ -702,6 +702,10 @@ class MainProcess {
 
     // Open the notebook window immediately (the panel's Open button) to watch streaming.
     ipcMain.on('open-notebook', () => this.showNotebook());
+
+    // Copy the queued selection to the system clipboard (notch-as-clipboard). Native
+    // clipboard write, so it works even when the hover-opened panel isn't key-focused.
+    ipcMain.on('panel:copy', (_e, text: string) => clipboard.writeText(String(text ?? '')));
 
     // Model picker = local Ollama models + cloud models for providers whose key is set.
     ipcMain.handle('panel:models', async () => {

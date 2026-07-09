@@ -13,6 +13,7 @@ import Paperclip from 'lucide-react/dist/esm/icons/paperclip';
 import CornerDownLeft from 'lucide-react/dist/esm/icons/corner-down-left';
 import ArrowUpRight from 'lucide-react/dist/esm/icons/arrow-up-right';
 import Check from 'lucide-react/dist/esm/icons/check';
+import Copy from 'lucide-react/dist/esm/icons/copy';
 import X from 'lucide-react/dist/esm/icons/x';
 import { decideEscapeAction, decideBlurAction, reconcilePick, draftAfter, statusAfterDismiss } from './panel-dismiss';
 import './panel.css';
@@ -36,6 +37,7 @@ interface LlamasAPI {
   listModels: () => Promise<string[]>;
   getDefaults: () => Promise<{ text?: string; vision?: string }>;
   setDefaultModel: (kind: 'text' | 'vision', model: string) => Promise<void>;
+  copyText: (text: string) => void;
   openNotebook: () => void;
   openSettings: () => void;
   pickFiles: () => Promise<Array<{ path: string; name: string }>>;
@@ -99,6 +101,8 @@ function Panel() {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState('');
   const [answer, setAnswer] = useState('');
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const islandRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
@@ -323,6 +327,13 @@ function Panel() {
   // % of a rough context budget (~8000 chars) the selection fills; min 1% when non-empty.
   const ctxPct = hasSelection ? Math.max(1, Math.min(100, Math.round((selChars / 8000) * 100))) : 0;
   const busy = status === 'running';
+  // Copy the queued selection to the clipboard (notch-as-clipboard) with a brief check.
+  const copySelection = useCallback(() => {
+    window.llamasAPI.copyText(selection);
+    setCopied(true);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(false), 1200);
+  }, [selection]);
   // The arrow-top-right button opens the notebook. Icon-only while working; labelled "Open" once done.
   const openBtn = (label: boolean) => (
     <button className={`box-open${label ? '' : ' icon-only'}`} title="Open in notebook" onClick={() => window.llamasAPI.openNotebook()}>
@@ -453,6 +464,13 @@ function Panel() {
               <div className={`box ${status === 'idle' ? (hasSelection ? 'has-sel' : 'is-empty') : 'active'} s-${status}`}>
                 {status === 'running' && openBtn(false)}
                 {status === 'done' && openBtn(true)}
+                {status === 'idle' && hasSelection && (
+                  <button
+                    className="box-copy"
+                    onClick={copySelection}
+                    title={copied ? 'Copied' : 'Copy selection'}
+                  >{copied ? <Check size={14} /> : <Copy size={14} />}</button>
+                )}
 
                 {status === 'running' ? (
                   <div className="sel-hint"><span className="working">Working…</span></div>
