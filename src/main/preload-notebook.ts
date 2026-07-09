@@ -2,7 +2,9 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ModelFit, DetailedModel, CatalogEntry, ModelsList } from './shared/model-types';
+import type { Folder, FolderState } from './services/notebook/folder-store';
 export type { ModelFit, DetailedModel, CatalogEntry, ModelsList };
+export type { Folder, FolderState };
 
 export interface NotebookMeta {
   prompt: string;        // action label (Explain / Debug / …) or freeform question
@@ -39,6 +41,21 @@ const api = {
   hide: (id: string): Promise<void> => ipcRenderer.invoke('notebook:hide', id),
   restore: (id: string): Promise<void> => ipcRenderer.invoke('notebook:restore', id),
   remove: (id: string): Promise<void> => ipcRenderer.invoke('notebook:delete', id),
+  /** Create an empty note (optionally inside a folder); resolves with the new note id. */
+  createNote: (folderId?: string | null): Promise<string | null> => ipcRenderer.invoke('notebook:create', folderId ?? null),
+
+  // ── Folder tree (organization) ──────────────────────────────────────────────────────
+  foldersGet: (): Promise<FolderState> => ipcRenderer.invoke('folders:get'),
+  createFolder: (name: string, parentId: string | null): Promise<Folder | null> => ipcRenderer.invoke('folders:create', name, parentId ?? null),
+  renameFolder: (id: string, name: string): Promise<void> => ipcRenderer.invoke('folders:rename', id, name),
+  deleteFolder: (id: string): Promise<void> => ipcRenderer.invoke('folders:delete', id),
+  moveNote: (noteId: string, folderId: string | null): Promise<void> => ipcRenderer.invoke('folders:move-note', noteId, folderId ?? null),
+  moveFolder: (id: string, parentId: string | null): Promise<void> => ipcRenderer.invoke('folders:move-folder', id, parentId ?? null),
+
+  // ── Custom window controls (native traffic lights hidden) ────────────────────────────
+  minimizeWindow: () => ipcRenderer.send('win:minimize'),
+  zoomWindow: () => ipcRenderer.send('win:zoom'),
+  closeWindow: () => ipcRenderer.send('win:close'),
   /** Fired after a streamed answer is saved (id of the new note). */
   onSaved: (cb: (id: string) => void) => {
     const h = (_e: unknown, id: string) => cb(id);
@@ -121,8 +138,9 @@ export type NotebookAPI = typeof api;
 // Settings now lives in the notebook's right pane (no separate window), so the
 // notebook window needs the same settings bridge the standalone settings window has.
 const settingsApi = {
-  get: (): Promise<{ openaiKeySet: boolean; anthropicKeySet: boolean; defaultTextModel?: string; defaultVisionModel?: string }> => ipcRenderer.invoke('settings:get'),
+  get: (): Promise<{ openaiKeySet: boolean; anthropicKeySet: boolean; defaultTextModel?: string; defaultVisionModel?: string; notchEnabled: boolean }> => ipcRenderer.invoke('settings:get'),
   setKey: (provider: 'openai' | 'anthropic', key: string): Promise<void> => ipcRenderer.invoke('settings:set-key', provider, key),
+  setNotchEnabled: (enabled: boolean): Promise<void> => ipcRenderer.invoke('settings:set-notch', enabled),
   listModels: (): Promise<string[]> => ipcRenderer.invoke('panel:models'),
   pullModel: (name: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('ollama:pull', name),
   onPullProgress: (cb: (p: { name: string; status: string; percent: number }) => void) => {

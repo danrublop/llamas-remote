@@ -3,6 +3,25 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.0] - 2026-07-09
+
+### Added
+- **Notebook redesign** with a warm editorial look and a **dark mode** — toggle it with the sun/moon button in the top bar; your choice is remembered between launches.
+- **Folders in the sidebar.** Organize notes into nestable folders, drag notes between them, and drag folders into other folders. Two-finger click (or right-click) empty space to make a new note or folder; two-finger click a note or folder for its actions (rename, delete, pin), and the menu opens right where you clicked.
+- **Resizable sidebar.** Drag the divider on its right edge to set the width you like; it sticks.
+- **Rich text in notes:** set text color, highlight passages, and drop in **syntax-highlighted code blocks** for Java, Python, JavaScript, and more — all of which survive save/reload.
+- **Turn the notch on or off** from Settings, without quitting the app.
+- **Inline AI in the notebook is now switched on** — type `/` in a note to run a command and stream the answer straight into your text.
+
+### Changed
+- **Settings and Models are now one page**, reached from the sidebar footer.
+- The notch panel dismisses more predictably (Escape, click-away, and losing focus all behave consistently).
+
+### Fixed
+- Highlight and text-color survive the Markdown round-trip, and colors from imported/AI text are sanitized so notes stay safe to open anywhere.
+- A hand-edited or corrupt folder layout no longer hangs the app on launch.
+- Creating a folder inside a collapsed folder now reveals it for renaming instead of silently naming it "New Folder".
+
 ## [1.3.0] - 2026-05-26
 
 ### Changed

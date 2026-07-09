@@ -4,10 +4,13 @@ import { BrandIcon } from './model-icon';
 import { SettingsView } from './settings-view';
 import { ModelsView } from './models-view';
 import { NotebookEditor } from './editor/NotebookEditor';
+import type { Editor } from '@tiptap/react';
 import './notebook.css';
 
 interface NotebookMeta { prompt: string; selection: string; sourceApp?: string; model: string }
 interface NoteSummary { id: string; title: string; snippet: string; sourceApp?: string; model?: string; imagePath?: string; pinned: boolean; createdAt: string }
+interface Folder { id: string; name: string; parentId: string | null }
+interface FolderState { folders: Folder[]; assignments: Record<string, string> }
 interface NotebookAPI {
   openSettings: () => void;
   list: () => Promise<NoteSummary[]>;
@@ -20,6 +23,16 @@ interface NotebookAPI {
   hide: (id: string) => Promise<void>;
   restore: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  createNote: (folderId?: string | null) => Promise<string | null>;
+  foldersGet: () => Promise<FolderState>;
+  createFolder: (name: string, parentId: string | null) => Promise<Folder | null>;
+  renameFolder: (id: string, name: string) => Promise<void>;
+  deleteFolder: (id: string) => Promise<void>;
+  moveNote: (noteId: string, folderId: string | null) => Promise<void>;
+  moveFolder: (id: string, parentId: string | null) => Promise<void>;
+  minimizeWindow: () => void;
+  zoomWindow: () => void;
+  closeWindow: () => void;
   signalReady: () => void;
   onShowSettings: (cb: () => void) => () => void;
   onSaved: (cb: (id: string) => void) => () => void;
@@ -53,15 +66,52 @@ const Ico = {
   trash: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>,
   copy: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
   download: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>,
+  chevron: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 6 15 12 9 18" /></svg>,
+  folder: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>,
+  note: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3h8l4 4v14a0 0 0 0 1 0 0H6a0 0 0 0 1 0 0z" /><polyline points="14 3 14 7 18 7" /></svg>,
+  addNote: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6" /><polyline points="13 3 13 8 18 8" /><line x1="18" y1="14" x2="18" y2="20" /><line x1="15" y1="17" x2="21" y2="17" /></svg>,
+  addFolder: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><line x1="12" y1="10" x2="12" y2="16" /><line x1="9" y1="13" x2="15" y2="13" /></svg>,
+  sidebar: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" /></svg>,
+  search: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>,
+  code: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>,
+  highlight: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l-4 4v3h3l4-4" /><path d="M13 7l4 4" /><path d="M20.5 6.5a2.1 2.1 0 0 0-3-3L9 12l3 3z" /></svg>,
+  moon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>,
+  sun: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="4" /><line x1="12" y1="20" x2="12" y2="22" /><line x1="4.2" y1="4.2" x2="5.6" y2="5.6" /><line x1="18.4" y1="18.4" x2="19.8" y2="19.8" /><line x1="2" y1="12" x2="4" y2="12" /><line x1="20" y1="12" x2="22" y2="12" /><line x1="4.2" y1="19.8" x2="5.6" y2="18.4" /><line x1="18.4" y1="5.6" x2="19.8" y2="4.2" /></svg>,
 };
+
+// Languages offered by the code-block dropdown (all bundled in lowlight's `common`).
+const CODE_LANGS: Array<{ id: string; label: string }> = [
+  { id: 'java', label: 'Java' }, { id: 'javascript', label: 'JavaScript' }, { id: 'typescript', label: 'TypeScript' },
+  { id: 'python', label: 'Python' }, { id: 'c', label: 'C' }, { id: 'cpp', label: 'C++' }, { id: 'csharp', label: 'C#' },
+  { id: 'go', label: 'Go' }, { id: 'rust', label: 'Rust' }, { id: 'ruby', label: 'Ruby' }, { id: 'php', label: 'PHP' },
+  { id: 'swift', label: 'Swift' }, { id: 'kotlin', label: 'Kotlin' }, { id: 'sql', label: 'SQL' }, { id: 'bash', label: 'Shell' },
+  { id: 'json', label: 'JSON' }, { id: 'xml', label: 'HTML/XML' }, { id: 'css', label: 'CSS' }, { id: 'plaintext', label: 'Plain' },
+];
 
 const countWords = (text: string): number => {
   const m = text.trim().match(/\S+/g);
   return m ? m.length : 0;
 };
 
+const EXPANDED_KEY = 'nb-expanded';
+const loadExpanded = (): Set<string> => {
+  try { const a = JSON.parse(localStorage.getItem(EXPANDED_KEY) || '[]'); return new Set(Array.isArray(a) ? a : []); }
+  catch { return new Set(); }
+};
+
 function Notebook() {
   const [notes, setNotes] = useState<NoteSummary[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [assignments, setAssignments] = useState<Record<string, string>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(loadExpanded);
+  const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('nb-sidebar') !== 'closed');
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const v = parseInt(localStorage.getItem('nb-sidebar-w') || '', 10);
+    return Number.isFinite(v) && v >= 200 && v <= 520 ? v : 300;
+  });
+  const widthRef = useRef(sidebarWidth);
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null); // folder id or '__root__'
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [streaming, setStreaming] = useState<'idle' | 'streaming' | 'error'>('idle');
@@ -70,7 +120,12 @@ function Notebook() {
   const [size, setSize] = useState(localStorage.getItem('nb-size') || '16');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<NoteSummary[] | null>(null); // null = not searching
-  const [view, setView] = useState<'notes' | 'settings' | 'models'>('notes'); // right pane: editor / settings / models
+  const [searchOpen, setSearchOpen] = useState(false); // search modal
+  const [actionTarget, setActionTarget] = useState<{ kind: 'note'; note: NoteSummary } | { kind: 'folder'; folder: Folder } | null>(null); // left-click actions modal
+  const [createOpen, setCreateOpen] = useState(false); // "create note/folder" modal (empty-sidebar two-finger click)
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); // where the last context menu opened
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('nb-theme') === 'dark' ? 'dark' : 'light'));
+  const [view, setView] = useState<'notes' | 'settings'>('notes'); // right pane: editor / combined settings
   const [image, setImage] = useState<string | null>(null); // capture data URL for the selected note
   const [words, setWords] = useState(0); // live word count
   const [toast, setToast] = useState<{ msg: string; undo?: () => void } | null>(null);
@@ -79,6 +134,10 @@ function Notebook() {
   // remount (and re-seed) whenever the note changes — useEditor only reads `content` once.
   const [editorMarkdown, setEditorMarkdown] = useState('');
   const [editorKey, setEditorKey] = useState(0);
+  const [editor, setEditor] = useState<Editor | null>(null); // live TipTap instance (for color/code toolbar)
+  const [textColor, setTextColor] = useState('#26251e');
+  const [hlColor, setHlColor] = useState('#ffe37a');
+  const [codeLang, setCodeLang] = useState('java');
   const liveMarkdown = useRef(''); // latest editor markdown, for copy/export/word count
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -86,6 +145,7 @@ function Notebook() {
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamRef = useRef<HTMLDivElement>(null); // read-only pane for a streaming notch answer
   const searchRef = useRef<HTMLInputElement>(null);
+  const renameRef = useRef<HTMLInputElement>(null);
   const selectedRef = useRef<string | null>(null);
   const streamingRef = useRef(false);
   selectedRef.current = selectedId;
@@ -98,6 +158,27 @@ function Notebook() {
   };
 
   const refresh = useCallback(async () => setNotes(await window.notebookAPI.list()), []);
+  const refreshFolders = useCallback(async () => {
+    const st = await window.notebookAPI.foldersGet();
+    setFolders(st.folders);
+    setAssignments(st.assignments);
+  }, []);
+
+  // Functional updater so back-to-back calls compose (e.g. newFolder expands the parent AND the
+  // new child in the same tick — a value-based update would clobber the first with the second).
+  const persistExpanded = useCallback((update: (prev: Set<string>) => Set<string>) => {
+    setExpanded((prev) => {
+      const next = update(prev);
+      try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+  const toggleFolder = useCallback((id: string) => {
+    persistExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }, [persistExpanded]);
+  const expandFolder = useCallback((id: string) => {
+    persistExpanded((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  }, [persistExpanded]);
 
   // Seed the TipTap editor with a note's markdown body (remount via editorKey).
   const loadEditor = useCallback((markdown: string) => {
@@ -127,7 +208,7 @@ function Notebook() {
 
   useEffect(() => {
     (async () => {
-      const list = await window.notebookAPI.list();
+      const [list] = await Promise.all([window.notebookAPI.list(), refreshFolders()]);
       setNotes(list);
       if (list.length) selectNote(list[0].id, list);
     })();
@@ -165,20 +246,29 @@ function Notebook() {
       if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
       const k = e.key.toLowerCase();
       if (k === 'n') { e.preventDefault(); newNote(); }
-      else if (k === 'f') { e.preventDefault(); setView('notes'); searchRef.current?.focus(); searchRef.current?.select(); }
+      else if (k === 'f') { e.preventDefault(); setView('notes'); setSearchOpen(true); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => { if (renamingFolder) { renameRef.current?.focus(); renameRef.current?.select(); } }, [renamingFolder]);
+
   function onTitleChange(v: string) {
     setTitle(v);
     if (selectedId) window.notebookAPI.rename(selectedId, v).then(refresh).catch(() => {});
   }
 
-  function togglePin(e: React.MouseEvent, n: NoteSummary) {
-    e.stopPropagation();
+  const closeActions = () => setActionTarget(null);
+  // Position a context menu at the click point, nudged in from the viewport edges so it never clips.
+  const menuStyle = (h: number): React.CSSProperties => ({
+    position: 'fixed',
+    left: Math.max(8, Math.min(menuPos.x, window.innerWidth - 268)),
+    top: Math.max(8, Math.min(menuPos.y, window.innerHeight - h - 8)),
+  });
+
+  function togglePin(n: NoteSummary) {
     window.notebookAPI.setPinned(n.id, !n.pinned).then(refresh).catch(() => {});
   }
 
@@ -222,8 +312,7 @@ function Notebook() {
     showInfo('Exported Markdown');
   }
 
-  async function deleteNote(e: React.MouseEvent, n: NoteSummary) {
-    e.stopPropagation();
+  async function deleteNote(n: NoteSummary) {
     commitDelete(); // finalize any earlier delete before starting a new one
     await window.notebookAPI.hide(n.id).catch(() => {}); // reversible: file stays on disk
     setNotes((ns) => ns.filter((x) => x.id !== n.id));
@@ -259,6 +348,13 @@ function Notebook() {
 
   function applyFont(f: string) { setFont(f); localStorage.setItem('nb-font', f); }
   function applySize(s: string) { setSize(s); localStorage.setItem('nb-size', s); }
+  function applyColor(hex: string) { setTextColor(hex); editor?.chain().focus().setColor(hex).run(); }
+  function toggleHighlight() { editor?.chain().focus().toggleHighlight({ color: hlColor }).run(); }
+  function applyHlColor(hex: string) { setHlColor(hex); editor?.chain().focus().setHighlight({ color: hex }).run(); }
+  function toggleCode() { editor?.chain().focus().toggleCodeBlock().updateAttributes('codeBlock', { language: codeLang }).run(); }
+  function applyCodeLang(lang: string) { setCodeLang(lang); editor?.chain().focus().updateAttributes('codeBlock', { language: lang }).run(); }
+
+  function closeSearch() { setSearchOpen(false); setQuery(''); setResults(null); }
 
   function onSearch(q: string) {
     setQuery(q);
@@ -275,33 +371,147 @@ function Notebook() {
     }, 180);
   }
 
-  function newNote() {
+  // --- creation --------------------------------------------------------------------------
+  // New note (optionally inside a folder). Persists immediately so the note can live in the
+  // tree, then loads it into the editor.
+  async function newNote(folderId: string | null = null) {
     streamingRef.current = false; setStreaming('idle');
     setView('notes');
-    setSelectedId(null); selectedRef.current = null; setTitle('');
-    loadEditor('');
+    const id = await window.notebookAPI.createNote(folderId).catch(() => null);
+    await refreshFolders();
+    const list = await window.notebookAPI.list();
+    setNotes(list);
+    if (folderId) expandFolder(folderId);
+    if (id) selectNote(id, list);
+    else { setSelectedId(null); selectedRef.current = null; setTitle(''); loadEditor(''); }
   }
 
-  const renderRow = (n: NoteSummary) => (
-    <div key={n.id} className={`note-row${selectedId === n.id ? ' selected' : ''}`} onClick={() => selectNote(n.id)}>
-      {n.model && <span className="row-icon"><BrandIcon model={n.model} size={16} /></span>}
+  async function newFolder(parentId: string | null = null) {
+    const f = await window.notebookAPI.createFolder('New Folder', parentId).catch(() => null);
+    if (parentId) expandFolder(parentId);
+    await refreshFolders();
+    if (f) { expandFolder(f.id); setRenamingFolder(f.id); }
+  }
+
+  async function commitRename(id: string, name: string) {
+    setRenamingFolder(null);
+    await window.notebookAPI.renameFolder(id, name).catch(() => {});
+    refreshFolders();
+  }
+
+  async function deleteFolder(f: Folder) {
+    await window.notebookAPI.deleteFolder(f.id).catch(() => {});
+    await refreshFolders();
+    showInfo(`Folder “${f.name}” removed — its notes moved up`);
+  }
+
+  // --- drag & drop (move notes / folders between folders) --------------------------------
+  function onDropInto(folderId: string | null) {
+    return async (e: React.DragEvent) => {
+      e.preventDefault(); e.stopPropagation();
+      setDropTarget(null);
+      const data = e.dataTransfer.getData('text/plain');
+      if (data.startsWith('note:')) {
+        await window.notebookAPI.moveNote(data.slice(5), folderId).catch(() => {});
+      } else if (data.startsWith('folder:')) {
+        const fid = data.slice(7);
+        if (fid !== folderId) await window.notebookAPI.moveFolder(fid, folderId).catch(() => {});
+      }
+      if (folderId) expandFolder(folderId);
+      refreshFolders();
+    };
+  }
+  const allowDrop = (key: string) => (e: React.DragEvent) => { e.preventDefault(); setDropTarget(key); };
+
+  // --- tree rendering --------------------------------------------------------------------
+  const sortedNotes = (arr: NoteSummary[]) => arr; // index already returns pinned-first, newest
+  const notesInFolder = (folderId: string | null) =>
+    sortedNotes(notes.filter((n) => (assignments[n.id] ?? null) === folderId));
+  const childFolders = (parentId: string | null) =>
+    folders.filter((f) => f.parentId === parentId).sort((a, b) => a.name.localeCompare(b.name));
+  const noteCount = (folderId: string): number => {
+    let c = notesInFolder(folderId).length;
+    for (const sub of childFolders(folderId)) c += noteCount(sub.id);
+    return c;
+  };
+
+  const renderNoteRow = (n: NoteSummary, depth: number) => (
+    <div
+      key={n.id}
+      className={`note-row${selectedId === n.id ? ' selected' : ''}`}
+      style={{ paddingLeft: 9 + depth * 15 }}
+      draggable
+      onDragStart={(e) => { e.dataTransfer.setData('text/plain', `note:${n.id}`); e.dataTransfer.effectAllowed = 'move'; }}
+      onClick={() => selectNote(n.id)}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenuPos({ x: e.clientX, y: e.clientY }); setActionTarget({ kind: 'note', note: n }); }}
+    >
+      <span className="row-icon">{n.pinned ? Ico.pin : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
       <div className="body">
         <div className="title">{n.title || 'Untitled'}</div>
         <div className="meta">{n.createdAt && relTime(n.createdAt) ? `${relTime(n.createdAt)} · ` : ''}{n.snippet}</div>
       </div>
-      <span className="row-actions">
-        <button className={`pin${n.pinned ? ' on' : ''}`} onClick={(e) => togglePin(e, n)} title={n.pinned ? 'Unpin' : 'Pin'}>{Ico.pin}</button>
-        <button className="row-del" onClick={(e) => deleteNote(e, n)} title="Delete note">{Ico.trash}</button>
-      </span>
     </div>
   );
 
-  const pinned = notes.filter((n) => n.pinned);
-  const recents = notes.filter((n) => !n.pinned);
+  const renderFolder = (f: Folder, depth: number): React.ReactNode => {
+    const isOpen = expanded.has(f.id);
+    const kids = childFolders(f.id);
+    const rows = notesInFolder(f.id);
+    return (
+      <div key={f.id} className="tree-folder">
+        <div
+          className={`folder-row${dropTarget === f.id ? ' drop-target' : ''}`}
+          style={{ paddingLeft: 9 + depth * 15 }}
+          draggable={renamingFolder !== f.id}
+          onDragStart={(e) => { e.dataTransfer.setData('text/plain', `folder:${f.id}`); e.dataTransfer.effectAllowed = 'move'; }}
+          onDragOver={allowDrop(f.id)}
+          onDragLeave={() => setDropTarget((t) => (t === f.id ? null : t))}
+          onDrop={onDropInto(f.id)}
+          onClick={() => toggleFolder(f.id)}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenuPos({ x: e.clientX, y: e.clientY }); setActionTarget({ kind: 'folder', folder: f }); }}
+        >
+          <span className="folder-ico">{Ico.folder}</span>
+          {renamingFolder === f.id ? (
+            <input
+              ref={renameRef}
+              className="folder-rename"
+              defaultValue={f.name}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitRename(f.id, (e.target as HTMLInputElement).value);
+                else if (e.key === 'Escape') setRenamingFolder(null);
+              }}
+              onBlur={(e) => commitRename(f.id, e.target.value)}
+            />
+          ) : (
+            <span className="folder-name">{f.name}</span>
+          )}
+          <span className="folder-count">{noteCount(f.id) || ''}</span>
+          <button
+            className={`disc${isOpen ? ' open' : ''}`}
+            onClick={(e) => { e.stopPropagation(); toggleFolder(f.id); }}
+            title={isOpen ? 'Collapse' : 'Expand'}
+          >{Ico.chevron}</button>
+        </div>
+        {isOpen && (
+          <div className="folder-children">
+            {kids.map((c) => renderFolder(c, depth + 1))}
+            {rows.map((n) => renderNoteRow(n, depth + 1))}
+            {kids.length === 0 && rows.length === 0 && (
+              <div className="folder-empty" style={{ paddingLeft: 9 + (depth + 1) * 15 }}>Empty</div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const rootFolders = childFolders(null);
+  const rootNotes = notesInFolder(null);
 
   // Metadata for the header line under the title (only for a saved, selected note).
   const current = selectedId ? notes.find((n) => n.id === selectedId) : null;
-  const relTime = (iso: string) => {
+  function relTime(iso: string) {
     const d = new Date(iso);
     if (isNaN(d.getTime())) return '';
     const s = Math.round((Date.now() - d.getTime()) / 1000);
@@ -314,80 +524,117 @@ function Notebook() {
     if (day === 1) return 'Yesterday';
     if (day < 7) return `${day}d ago`;
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+  }
+
+  const setSidebar = (open: boolean) => { setSidebarOpen(open); localStorage.setItem('nb-sidebar', open ? 'open' : 'closed'); };
+
+  // Dark mode — stamp the theme on <html> so the [data-theme="dark"] token overrides apply.
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('nb-theme', theme);
+  }, [theme]);
+  const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+
+  // Drag the divider on the sidebar's right edge to resize it (clamped 200–520px, persisted).
+  // The `resizing` body class force-disables text selection everywhere (incl. the editor)
+  // so dragging over content never paints a selection.
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    document.body.classList.add('resizing');
+    const onMove = (ev: MouseEvent) => {
+      const w = Math.min(520, Math.max(200, ev.clientX));
+      widthRef.current = w;
+      setSidebarWidth(w);
+    };
+    const onUp = () => {
+      document.body.classList.remove('resizing');
+      localStorage.setItem('nb-sidebar-w', String(Math.round(widthRef.current)));
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('blur', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    // Fallback: if the terminating mouseup is swallowed (Space/Mission-Control switch on macOS),
+    // window blur still tears down the drag so the app isn't stranded with text-selection off.
+    window.addEventListener('blur', onUp);
   };
+  // Glossy, always-visible window controls (native traffic lights are hidden in main.ts).
+  const winControls = (
+    <div className="win-controls">
+      <button className="tl tl-close" onClick={() => window.notebookAPI.closeWindow()} title="Close" />
+      <button className="tl tl-min" onClick={() => window.notebookAPI.minimizeWindow()} title="Minimize" />
+      <button className="tl tl-zoom" onClick={() => window.notebookAPI.zoomWindow()} title="Zoom" />
+    </div>
+  );
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="sidebar-top" />
-        <button className="new-note" onClick={newNote} title="New note">
-          <span className="nn-icon">+</span> New note
-        </button>
-        <div className="search-wrap">
-          <span className="search-icon">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
-          </span>
-          <input ref={searchRef} className="search-input" placeholder="Search notes…" value={query} onChange={(e) => onSearch(e.target.value)} />
+      {sidebarOpen && (
+      <>
+      <aside className="sidebar" style={{ width: sidebarWidth }}>
+        <div className="sidebar-top">
+          {winControls}
+          <button className="icon-btn" onClick={() => setSidebar(false)} title="Hide sidebar">{Ico.sidebar}</button>
         </div>
-        <div className="note-list">
-          {results !== null ? (
-            results.length === 0
-              ? <div className="empty-list">No matches.</div>
-              : results.map(renderRow)
-          ) : notes.length === 0 ? (
-            <div className="empty-list">No notes yet.<br />Capture text and pick an action.</div>
+        <div
+          className={`note-list${dropTarget === '__root__' ? ' drop-target' : ''}`}
+          onDragOver={allowDrop('__root__')}
+          onDragLeave={() => setDropTarget((t) => (t === '__root__' ? null : t))}
+          onDrop={onDropInto(null)}
+          onContextMenu={(e) => { if (!(e.target as HTMLElement).closest('.note-row, .folder-row, button, input')) { e.preventDefault(); setMenuPos({ x: e.clientX, y: e.clientY }); setCreateOpen(true); } }}
+          title="Two-finger click empty space to create a note or folder"
+        >
+          {notes.length === 0 && folders.length === 0 ? (
+            <div className="empty-list">No notes yet.<br />Two-finger click here to make a note or folder, or capture text.</div>
           ) : (
             <>
-              {pinned.length > 0 && <>
-                <div className="section-label">Pinned</div>
-                {pinned.map(renderRow)}
-              </>}
-              {recents.length > 0 && <>
-                <div className="section-label">Recents</div>
-                {recents.map(renderRow)}
-              </>}
+              {rootFolders.map((f) => renderFolder(f, 0))}
+              {rootNotes.map((n) => renderNoteRow(n, 0))}
             </>
           )}
         </div>
         <div className="sidebar-footer">
-          <button className={`account-row models-row${view === 'models' ? ' active' : ''}`} onClick={() => setView('models')} title="Models — what runs on your machine">
-            <span className="avatar models-avatar">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
-            </span>
-            <span className="account-body">
-              <div className="account-name">Models</div>
-              <div className="account-sub">What runs on your Mac</div>
-            </span>
-          </button>
-          <button className={`account-row${view === 'settings' ? ' active' : ''}`} onClick={() => setView('settings')} title="Open settings">
-            <span className="avatar">L</span>
-            <span className="account-body">
-              <div className="account-name">Llamas Remote</div>
-              <div className="account-sub">Settings</div>
-            </span>
+          <button className={`account-row${view === 'settings' ? ' active' : ''}`} onClick={() => setView('settings')} title="Settings & models">
+            <span className="account-name">Settings &amp; models</span>
             <span className="account-gear">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
             </span>
           </button>
         </div>
       </aside>
+      <div className="sidebar-resizer" onMouseDown={startResize} title="Drag to resize" />
+      </>
+      )}
 
       <main className="main">
         <div className="main-top">
-          {view === 'notes' && streaming !== 'streaming' && (words > 0 || selectedId) && (
+          <div className="main-top-left">
+            {!sidebarOpen && (
+              <>
+                {winControls}
+                <button className="icon-btn" onClick={() => setSidebar(true)} title="Show sidebar">{Ico.sidebar}</button>
+              </>
+            )}
+          </div>
+          {view === 'notes' && streaming !== 'streaming' && (
             <div className="main-actions">
-              <button onClick={copyNote} title="Copy as Markdown">{Ico.copy}</button>
-              <button onClick={exportNote} title="Export as Markdown (.md)">{Ico.download}</button>
+              <button onClick={() => setSearchOpen(true)} title="Search notes (⌘F)">{Ico.search}</button>
+              <button onClick={() => newNote(null)} title="New note (⌘N)">{Ico.addNote}</button>
+              <button onClick={toggleTheme} title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>{theme === 'dark' ? Ico.sun : Ico.moon}</button>
             </div>
           )}
         </div>
-        {view === 'settings' || view === 'models' ? (
+        {view === 'settings' ? (
           <div className="settings-pane">
             <button className="settings-back" onClick={() => setView('notes')} title="Back to notes">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></svg>
               Back to notes
             </button>
-            {view === 'settings' ? <SettingsView /> : <ModelsView />}
+            <div className="settings-combined">
+              <ModelsView />
+              <SettingsView hideModels />
+            </div>
           </div>
         ) : (
         <>
@@ -397,6 +644,7 @@ function Notebook() {
             {current.model && <span className="nm-model"><BrandIcon model={current.model} size={14} /> {current.model}</span>}
             {current.sourceApp && <><span className="nm-dot">·</span><span>{current.sourceApp}</span></>}
             {current.createdAt && relTime(current.createdAt) && <><span className="nm-dot">·</span><span>{relTime(current.createdAt)}</span></>}
+            <span className="nm-dot">·</span><span>{words} {words === 1 ? 'word' : 'words'}</span>
           </div>
         )}
         {image && (
@@ -418,30 +666,121 @@ function Notebook() {
               markdown={editorMarkdown}
               model={current?.model}
               onChange={onEditorChange}
+              onEditorReady={setEditor}
             />
           )}
         </div>
         {streaming === 'error' && <div className="streaming-tag err">{streamErr}</div>}
         <div className="toolbar">
-          <span className="meta">{streaming === 'streaming' ? 'streaming…' : `${words} ${words === 1 ? 'word' : 'words'}`}</span>
-          <span className="sep" />
-          <span className="toolbar-hint">Type <code>/</code> for AI · Markdown shortcuts (#, -, &gt;, ```)</span>
-          <span className="sep" />
           <select value={font} onChange={(e) => applyFont(e.target.value)} title="Font">
             {FONTS.map((f) => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
           </select>
           <select value={size} onChange={(e) => applySize(e.target.value)} title="Size">
             {SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
+          {editor && (
+            <>
+              <span className="sep" />
+              <button className={`ico${editor.isActive('codeBlock') ? ' active' : ''}`} onClick={toggleCode} title="Code block (syntax highlighted)">{Ico.code}</button>
+              <select className="tb-lang" value={codeLang} onChange={(e) => applyCodeLang(e.target.value)} title="Code language">
+                {CODE_LANGS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
+              </select>
+              <label className="color-btn" title="Text color">
+                <span className="color-dot" style={{ background: textColor }} />
+                <input type="color" value={textColor} onChange={(e) => applyColor(e.target.value)} />
+              </label>
+              <button className={`ico${editor.isActive('highlight') ? ' active' : ''}`} onClick={toggleHighlight} title="Highlight">{Ico.highlight}</button>
+              <label className="color-btn" title="Highlight color">
+                <span className="color-dot hl" style={{ background: hlColor }} />
+                <input type="color" value={hlColor} onChange={(e) => applyHlColor(e.target.value)} />
+              </label>
+            </>
+          )}
+          {(words > 0 || selectedId) && (
+            <>
+              <span className="sep" />
+              <button className="ico" onClick={copyNote} title="Copy as Markdown">{Ico.copy}</button>
+              <button className="ico" onClick={exportNote} title="Export as Markdown (.md)">{Ico.download}</button>
+            </>
+          )}
         </div>
         </>
         )}
       </main>
 
+      {actionTarget && (
+        <div className="action-modal-backdrop" onMouseDown={closeActions}>
+          <div className="action-modal" style={menuStyle(actionTarget.kind === 'note' ? 190 : 232)} onMouseDown={(e) => e.stopPropagation()}>
+            {actionTarget.kind === 'note' ? (
+              <>
+                <div className="action-title">{actionTarget.note.title || 'Untitled'}</div>
+                <button className="action-item" onClick={() => { const n = actionTarget.note; closeActions(); selectNote(n.id); }}>{Ico.note} Open note</button>
+                <button className="action-item" onClick={() => { togglePin(actionTarget.note); closeActions(); }}>{Ico.pin} {actionTarget.note.pinned ? 'Unpin' : 'Pin'}</button>
+                <button className="action-item danger" onClick={() => { const n = actionTarget.note; closeActions(); deleteNote(n); }}>{Ico.trash} Delete note</button>
+              </>
+            ) : (
+              <>
+                <div className="action-title">{actionTarget.folder.name}</div>
+                <button className="action-item" onClick={() => { const id = actionTarget.folder.id; closeActions(); newNote(id); }}>{Ico.addNote} New note here</button>
+                <button className="action-item" onClick={() => { const id = actionTarget.folder.id; closeActions(); newFolder(id); }}>{Ico.addFolder} New folder here</button>
+                <button className="action-item" onClick={() => { const id = actionTarget.folder.id; closeActions(); setRenamingFolder(id); }}>{Ico.folder} Rename</button>
+                <button className="action-item danger" onClick={() => { const f = actionTarget.folder; closeActions(); deleteFolder(f); }}>{Ico.trash} Delete folder</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {createOpen && (
+        <div className="action-modal-backdrop" onMouseDown={() => setCreateOpen(false)}>
+          <div className="action-modal" style={menuStyle(120)} onMouseDown={(e) => e.stopPropagation()}>
+            <div className="action-title">Create</div>
+            <button className="action-item" onClick={() => { setCreateOpen(false); newNote(null); }}>{Ico.addNote} New note</button>
+            <button className="action-item" onClick={() => { setCreateOpen(false); newFolder(null); }}>{Ico.addFolder} New folder</button>
+          </div>
+        </div>
+      )}
+
+      {searchOpen && (
+        <div className="search-modal-backdrop" onMouseDown={closeSearch}>
+          <div className="search-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="search-modal-input">
+              <span className="search-icon">{Ico.search}</span>
+              <input
+                ref={searchRef}
+                autoFocus
+                placeholder="Search notes…"
+                value={query}
+                onChange={(e) => onSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') closeSearch(); }}
+              />
+              <kbd className="search-esc">esc</kbd>
+            </div>
+            <div className="search-modal-results">
+              {query.trim() === '' ? (
+                <div className="search-hint">Type to search across all your notes.</div>
+              ) : results && results.length ? (
+                results.map((n) => (
+                  <button key={n.id} className="search-result" onClick={() => { selectNote(n.id); closeSearch(); }}>
+                    <span className="row-icon">{n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
+                    <span className="sr-body">
+                      <span className="sr-title">{n.title || 'Untitled'}</span>
+                      <span className="sr-snip">{n.snippet}</span>
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <div className="search-hint">No matches.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {toast && (
         <div className="toast" role="status">
           <span className="toast-msg">{toast.msg}</span>
-          <button className="toast-undo" onClick={toast.undo}>Undo</button>
+          {toast.undo && <button className="toast-undo" onClick={toast.undo}>Undo</button>}
         </div>
       )}
     </div>

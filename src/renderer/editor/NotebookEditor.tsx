@@ -12,9 +12,48 @@
 // Markdown is the on-disk format: load via setContent(md, markdown), save via getMarkdown().
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useEditor, EditorContent, ReactNodeViewRenderer } from '@tiptap/react';
+import { useEditor, EditorContent, ReactNodeViewRenderer, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
+import { TextStyle, Color } from '@tiptap/extension-text-style';
+import { Highlight } from '@tiptap/extension-highlight';
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
+import { createLowlight, common } from 'lowlight';
+
+// Syntax highlighting for code blocks — `common` bundles ~37 languages (java, js, python, …).
+const lowlight = createLowlight(common);
+
+// Markdown has no syntax for text color / highlight, so we serialize those marks to inline
+// HTML (`<span style="color">`, `<mark style="background-color">`) — which the marks'
+// parseHTML rebuilds on load, so color + highlight survive the on-disk Markdown round-trip.
+// Only these registered marks are reconstructed from the HTML, so it stays XSS-safe.
+// The serializer passes the mark's attrs directly on `node.attrs`.
+// Only emit a color we can prove is a plain CSS color. The Color mark's parseHTML
+// CSS-normalizes + strips quotes, but Highlight's parseHTML reads `data-color` RAW —
+// so untrusted on-disk Markdown (model/clipboard output) could round-trip an
+// unescaped value into `node.attrs.color`. Allowlisting hex / rgb() / hsl() / a bare
+// name keeps the serialized `<span>`/`<mark>` HTML injection-free even on export.
+const SAFE_COLOR = /^#[0-9a-fA-F]{3,8}$|^rgba?\([\d.,\s%/]+\)$|^hsla?\([\d.,\s%/]+\)$|^[a-zA-Z]{1,32}$/;
+const markColor = (node: unknown): string | undefined => {
+  const c = (node as { attrs?: { color?: string } })?.attrs?.color?.trim();
+  return c && SAFE_COLOR.test(c) ? c : undefined;
+};
+
+const TextStyleMd = TextStyle.extend({
+  renderMarkdown(node: unknown, { renderChildren }: { renderChildren: () => string }) {
+    const color = markColor(node);
+    const inner = renderChildren();
+    return color ? `<span style="color: ${color}">${inner}</span>` : inner;
+  },
+} as never);
+
+const HighlightMd = Highlight.extend({
+  renderMarkdown(node: unknown, { renderChildren }: { renderChildren: () => string }) {
+    const color = markColor(node);
+    const inner = renderChildren();
+    return color ? `<mark style="background-color: ${color}">${inner}</mark>` : `<mark>${inner}</mark>`;
+  },
+} as never);
 import { AiBlock } from './ai-block';
 import { AiBlockView } from './ai-block-view';
 import { setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown } from './doc-helpers';
@@ -47,6 +86,8 @@ export interface NotebookEditorProps {
   userCommands?: SlashCommand[];
   /** Called (debounced) when the body changes, with the current Markdown. */
   onChange?: (markdown: string) => void;
+  /** Receives the live editor instance (for parent-rendered toolbar controls). */
+  onEditorReady?: (editor: Editor | null) => void;
 }
 
 interface MenuState {
@@ -62,7 +103,7 @@ interface MenuState {
 
 const CLOSED: MenuState = { open: false, query: '', left: 0, top: 0, index: 0, from: 0 };
 
-export function NotebookEditor({ markdown, model, userCommands = [], onChange }: NotebookEditorProps) {
+export function NotebookEditor({ markdown, model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
   const [menu, setMenu] = useState<MenuState>(CLOSED);
   const buffers = useRef<Map<string, string>>(new Map());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -70,7 +111,15 @@ export function NotebookEditor({ markdown, model, userCommands = [], onChange }:
   const results = menu.open ? filterCommands(commands, menu.query, 'text') : [];
 
   const editor = useEditor({
-    extensions: [StarterKit, Markdown, AiBlockWithView],
+    extensions: [
+      StarterKit.configure({ codeBlock: false }), // replaced by the syntax-highlighting block below
+      Markdown,
+      AiBlockWithView,
+      TextStyleMd,
+      Color,
+      HighlightMd.configure({ multicolor: true }),
+      CodeBlockLowlight.configure({ lowlight }),
+    ],
     content: markdown,
     contentType: 'markdown' as never,
     onUpdate: ({ editor }) => {
@@ -82,6 +131,12 @@ export function NotebookEditor({ markdown, model, userCommands = [], onChange }:
     },
     onSelectionUpdate: () => detectSlash(),
   });
+
+  // Hand the live editor up to the parent so its toolbar can drive color / code-block commands.
+  useEffect(() => {
+    onEditorReady?.(editor);
+    return () => onEditorReady?.(null);
+  }, [editor, onEditorReady]);
 
   // ---- slash detection -----------------------------------------------------------------
   const detectSlash = useCallback(() => {

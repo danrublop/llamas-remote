@@ -18,7 +18,8 @@ import { OpenAiLlmClient } from './services/llm/openai-llm-client';
 import { AnthropicLlmClient } from './services/llm/anthropic-llm-client';
 import { MultiLlmClient, CLOUD_MODELS } from './services/llm/multi-llm-client';
 import { SettingsService, settingsPath } from './services/settings/settings-service';
-import { MarkdownStore, isValidEntryId } from './services/notebook/markdown-store';
+import { MarkdownStore, isValidEntryId, makeEntry } from './services/notebook/markdown-store';
+import { FolderStore } from './services/notebook/folder-store';
 import { migrateHtmlBodies } from './services/notebook/migrate-html-bodies';
 import { NotebookStore } from './services/notebook/notebook-store';
 import { MemoryNotebookIndex } from './services/notebook/memory-index';
@@ -57,6 +58,7 @@ class MainProcess {
   private streamSession: StreamSession | null = null;
   private captureProvider: CaptureProvider | null = null;
   private notebookStore: NotebookStore | null = null;
+  private folderStore: FolderStore | null = null;
   private llmClient: OllamaLlmClient | null = null;
   private settingsService: SettingsService | null = null;
   private notebookWindow: BrowserWindow | null = null;
@@ -73,12 +75,14 @@ class MainProcess {
     // Wire the notch panel stack (capture + controller + notebook).
     this.setupNotch();
 
-    // Menu-bar presence + the notch panel (the primary UI).
+    // Menu-bar presence + the notch panel (the primary UI). The notch can be switched off
+    // in Settings — when off, no island and no global shortcut (the menu-bar tray remains).
     this.createTray();
-    this.createNotchPanel();
-    if (this.notchPanel) this.notchPanel.showInactive(); // visible on first launch
-
-    this.registerGlobalShortcuts();
+    if (this.settingsService?.isNotchEnabled() ?? true) {
+      this.createNotchPanel();
+      if (this.notchPanel) this.notchPanel.showInactive(); // visible on first launch
+      this.registerGlobalShortcuts();
+    }
     this.setupNotchIpc();
     this.handleAppLifecycle();
 
@@ -122,6 +126,9 @@ class MainProcess {
       } catch (e) {
         console.warn('notebook syncFromDisk failed:', e);
       }
+
+      // Folder manifest (organization only — lives beside the .md files, never over them).
+      this.folderStore = new FolderStore(join(notebookDir, 'folders.json'), () => randomUUID());
 
       this.captureProvider = createMacCaptureProvider();
       this.llmClient = new OllamaLlmClient();
@@ -280,6 +287,7 @@ class MainProcess {
   }
 
   private async handleNotchHotkey(): Promise<void> {
+    if (!(this.settingsService?.isNotchEnabled() ?? true)) return; // notch switched off
     this.createNotchPanel();
     const panel = this.notchPanel;
     if (!panel) return;
@@ -371,6 +379,9 @@ class MainProcess {
       },
     });
     this.hardenWindow(this.notebookWindow);
+    // Hide the native traffic lights — the renderer draws its own (glossy, always-visible)
+    // window controls in the sidebar/top bar, wired via the win:* IPC below.
+    if (process.platform === 'darwin') this.notebookWindow.setWindowButtonVisibility(false);
     // A fresh load means the renderer hasn't mounted its listeners yet — buffer events
     // until it signals 'notebook:ready' (handshake), and re-buffer on any reload.
     this.streamSession?.markNotReady();
@@ -390,6 +401,13 @@ class MainProcess {
       if (process.platform === 'darwin') app.dock?.show();
       this.notebookWindow.show();
       this.notebookWindow.focus();
+      // Melt the notch back to its resting nub explicitly — don't rely on the panel's
+      // blur firing (unreliable for an alwaysOnTop type:'panel' window). Fires on the
+      // explicit "open notebook" action AND on auto-open-when-done.
+      if (this.notchPanel && !this.notchPanel.isDestroyed()) {
+        this.notchPanel.webContents.send('panel:collapse');
+        this.notchPanel.setIgnoreMouseEvents(true, { forward: true });
+      }
     }
   }
 
@@ -602,7 +620,8 @@ class MainProcess {
 
     // Settings window + operations.
     ipcMain.on('open-settings', () => this.showSettings());
-    ipcMain.handle('settings:get', () => this.settingsService?.getRedacted() ?? { openaiKeySet: false, anthropicKeySet: false });
+    ipcMain.handle('settings:get', () => this.settingsService?.getRedacted() ?? { openaiKeySet: false, anthropicKeySet: false, notchEnabled: true });
+    ipcMain.handle('settings:set-notch', (_e, enabled: boolean) => { this.applyNotchEnabled(!!enabled); });
     ipcMain.handle('settings:set-key', (_e, provider: 'openai' | 'anthropic', key: string) => {
       this.settingsService?.setKey(provider, key);
     });
@@ -641,7 +660,42 @@ class MainProcess {
     ipcMain.handle('notebook:update-body', (_e, id: string, body: string) => { if (isValidEntryId(id)) this.notebookStore?.updateBody(id, body); });
     ipcMain.handle('notebook:hide', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.hide(id); });
     ipcMain.handle('notebook:restore', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.restore(id); });
-    ipcMain.handle('notebook:delete', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.delete(id); });
+    ipcMain.handle('notebook:delete', (_e, id: string) => {
+      if (!isValidEntryId(id)) return;
+      this.notebookStore?.delete(id);
+      this.folderStore?.forgetNote(id);
+    });
+
+    // Create an empty note from the notebook UI (New note), optionally inside a folder.
+    ipcMain.handle('notebook:create', (_e, folderId?: string) => {
+      if (!this.notebookStore) return null;
+      const id = randomUUID();
+      this.notebookStore.save(makeEntry({ id, body: '', tags: [], model: '', sourceApp: '' }));
+      if (folderId) this.folderStore?.moveNote(id, folderId);
+      return id;
+    });
+
+    // ── Folder manifest (tree + note→folder assignments) ──────────────────────────────
+    ipcMain.handle('folders:get', () => this.folderStore?.getState() ?? { folders: [], assignments: {} });
+    ipcMain.handle('folders:create', (_e, name: string, parentId: string | null) => {
+      try { return this.folderStore?.createFolder(name, parentId ?? null) ?? null; }
+      catch { return null; }
+    });
+    ipcMain.handle('folders:rename', (_e, id: string, name: string) => { this.folderStore?.renameFolder(id, name); });
+    ipcMain.handle('folders:delete', (_e, id: string) => { this.folderStore?.deleteFolder(id); });
+    ipcMain.handle('folders:move-note', (_e, noteId: string, folderId: string | null) => {
+      if (isValidEntryId(noteId)) this.folderStore?.moveNote(noteId, folderId ?? null);
+    });
+    ipcMain.handle('folders:move-folder', (_e, id: string, parentId: string | null) => { this.folderStore?.moveFolder(id, parentId ?? null); });
+
+    // ── Custom window controls (native traffic lights are hidden) ─────────────────────
+    ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize());
+    ipcMain.on('win:zoom', (e) => {
+      const w = BrowserWindow.fromWebContents(e.sender);
+      if (!w) return;
+      w.isMaximized() ? w.unmaximize() : w.maximize();
+    });
+    ipcMain.on('win:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 
     ipcMain.handle('panel:screenshot', async () => {
       if (this.screenshotInFlight) return null; // a capture is already up — don't overlap crosshairs
@@ -772,12 +826,35 @@ class MainProcess {
         this.notchPanel.setIgnoreMouseEvents(true, { forward: true });
       }
     });
+
+    // Focus-on-engage: a hover-opened panel is interactive but never key, so Esc/blur
+    // can't fire. When it runs an action it asks for focus so keyboard dismiss works.
+    ipcMain.on('panel:focus', () => {
+      if (this.notchPanel && !this.notchPanel.isDestroyed()) this.notchPanel.focus();
+    });
   }
 
+  private readonly notchShortcut = process.platform === 'darwin' ? 'Cmd+Shift+Space' : 'Ctrl+Shift+Space';
+
   private registerGlobalShortcuts(): void {
-    const notchShortcut = process.platform === 'darwin' ? 'Cmd+Shift+Space' : 'Ctrl+Shift+Space';
-    globalShortcut.register(notchShortcut, () => this.handleNotchHotkey());
-    console.log(`Global shortcut registered: ${notchShortcut}`);
+    if (!globalShortcut.isRegistered(this.notchShortcut)) {
+      globalShortcut.register(this.notchShortcut, () => this.handleNotchHotkey());
+    }
+    console.log(`Global shortcut registered: ${this.notchShortcut}`);
+  }
+
+  /** Turn the notch (island + global shortcut) on or off and persist the choice. */
+  private applyNotchEnabled(enabled: boolean): void {
+    this.settingsService?.setNotchEnabled(enabled);
+    if (enabled) {
+      this.createNotchPanel();
+      this.notchPanel?.showInactive();
+      this.registerGlobalShortcuts();
+    } else {
+      globalShortcut.unregister(this.notchShortcut);
+      if (this.notchPanel && !this.notchPanel.isDestroyed()) this.notchPanel.destroy();
+      this.notchPanel = null;
+    }
   }
 
   private handleAppLifecycle(): void {

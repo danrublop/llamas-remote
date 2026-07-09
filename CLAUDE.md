@@ -46,11 +46,13 @@ src/main/
     models/model-capability.ts  pure RAM-fit heuristic + curated pull catalog (Models page)
     presets/                    built-in action prompts (Debug/Translate/…)
     notebook/                   MarkdownStore (truth) + SqliteNotebookIndex (FTS5) + reconcile
+                                (+ folder-store.ts: folders.json org layer — folder tree + note→folder map, kept separate so notes stay flat Markdown)
     settings/                   API keys (encrypted) + default text/vision model picks
     ollama-process.service.ts   auto-start Ollama; detect install, link to ollama.com if absent
 src/renderer/
   panel.tsx                     the notch HUD (incl. OCR "grab text" button)
-  notebook.tsx                  notebook + in-pane settings + Models page
+  notebook.tsx                  notebook (folder tree, resizable sidebar, dark mode) + combined Settings/Models page
+  settings-view.tsx             combined Settings + Models page (API keys, default picks, notch on/off toggle)
   models-view.tsx               Models page: RAM-fit badges, pull/delete, default picks
   preload-panel.ts / preload-notebook.ts   narrow contextBridge IPC surfaces
 build-resources/ocr.swift       Vision-framework OCR helper, compiled by `npm run build:ocr`

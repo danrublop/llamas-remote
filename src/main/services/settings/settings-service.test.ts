@@ -42,9 +42,9 @@ afterEach(() => {
 describe('SettingsService', () => {
   it('redacts keys for the renderer (boolean "set", never the value)', () => {
     const s = new SettingsService(file);
-    expect(s.getRedacted()).toEqual({ openaiKeySet: false, anthropicKeySet: false });
+    expect(s.getRedacted()).toEqual({ openaiKeySet: false, anthropicKeySet: false, notchEnabled: true });
     s.setKey('openai', 'sk-secret');
-    expect(s.getRedacted()).toEqual({ openaiKeySet: true, anthropicKeySet: false });
+    expect(s.getRedacted()).toEqual({ openaiKeySet: true, anthropicKeySet: false, notchEnabled: true });
   });
 
   it('persists keys encrypted at rest and decrypts them on reload', () => {
@@ -131,6 +131,30 @@ describe('SettingsService', () => {
       const reloaded = new SettingsService(file);
       expect(reloaded.get().openaiKey).toBe('sk-x');
       expect(reloaded.getCustomPresets()).toHaveLength(1);
+    });
+  });
+
+  describe('notchEnabled', () => {
+    it('defaults to on when unset', () => {
+      const s = new SettingsService(file);
+      expect(s.isNotchEnabled()).toBe(true);
+    });
+
+    it('persists a disable across reload (only explicit false turns it off)', () => {
+      new SettingsService(file).setNotchEnabled(false);
+      const reloaded = new SettingsService(file);
+      expect(reloaded.isNotchEnabled()).toBe(false);
+      expect(reloaded.getRedacted().notchEnabled).toBe(false);
+    });
+
+    it('re-enabling persists and does not disturb stored keys', () => {
+      const s = new SettingsService(file);
+      s.setKey('openai', 'sk-keep');
+      s.setNotchEnabled(false);
+      s.setNotchEnabled(true);
+      const reloaded = new SettingsService(file);
+      expect(reloaded.isNotchEnabled()).toBe(true);
+      expect(reloaded.get().openaiKey).toBe('sk-keep');
     });
   });
 });

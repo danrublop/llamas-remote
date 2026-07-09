@@ -61,6 +61,9 @@ const api = {
   close: () => ipcRenderer.send('panel:close'),
   /** Toggle whether the window captures mouse events (true) or is click-through (false). */
   setInteractive: (on: boolean) => ipcRenderer.send('panel:set-interactive', on),
+  /** Take keyboard focus (so Esc / window-blur dismissal become live). Called when the
+   *  panel runs an action from a hover-open, which never grabbed focus on its own. */
+  focus: () => ipcRenderer.send('panel:focus'),
 
   /** Fired when the hotkey captured a selection (prefill the panel). */
   onCaptured: (cb: (data: PanelCaptured) => void) => {

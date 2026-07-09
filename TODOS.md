@@ -109,3 +109,40 @@ OpenAI/Anthropic now surface the provider's real message instead of "status code
 - **Why:** No diagnostics from shipped apps when users hit capture/Ollama errors.
 - **How to start:** Re-add a logger (electron-log or similar) and route main-process logs to a file; keep console in dev.
 - **Effort:** S (human) → S (CC).
+
+---
+
+## From the 2026-05-27 notch dismiss/reload eng review
+
+### P3 — Notch visibility state machine (deferred Approach B)
+- **What:** Refactor `panel.tsx` dismiss/visibility into one explicit state machine
+  (`resting → expanding → expanded → dismissing → resting`) with a single `dismiss()`/`present()`
+  pair, instead of the current fan-in of separate handlers (Esc, window-blur, click-nub,
+  main-blur via IPC, mouse-leave) all calling `collapseNow()`.
+- **Why:** The 2026-05-27 dismiss fix (Approach A) keeps handlers separate, which is fine for
+  today's ~4 states. More states (pinned-while-streaming, multi-step capture) would make the
+  spread-out handlers fragile and easy to add a trigger that forgets a cleanup step.
+- **Context:** Approach A was chosen for the smallest explicit diff; B was explicitly deferred.
+  See design doc `daniellopez-fix-audit-critical-high-design-20260527-120241.md` (Approaches
+  Considered). Revisit when a 5th+ panel state appears.
+- **Depends on:** nothing. **Effort:** M (human) → S/M (CC).
+
+---
+
+## From the 2026-07-09 notebook-redesign eng review (deferred, non-blocking)
+
+### P3 — Smoother sidebar resize (avoid setState per mousemove)
+- **What:** During a sidebar-divider drag, `notebook.tsx` calls `setSidebarWidth` on every
+  `mousemove`, re-rendering the whole `Notebook` tree and reflowing the TipTap doc each frame.
+- **Why:** Fine today; can jank on very large notes. Write the width to the DOM via a ref
+  during drag and commit to React state only on `mouseup` (widthRef already holds the value).
+- **Depends on:** nothing. **Effort:** S (human) → S (CC).
+
+### P3 — Trim the lowlight bundle to offered languages
+- **What:** `NotebookEditor.tsx` uses `createLowlight(common)` (~37 highlight.js grammars) but
+  the code-block dropdown (`CODE_LANGS`) only exposes 19, shipping ~18 dead grammars in the
+  renderer bundle.
+- **Why:** Bundle size. Register just the offered grammars explicitly. Verify each language's
+  import name before swapping — a wrong name silently drops highlighting (why it was deferred
+  out of the ship rather than done blind).
+- **Depends on:** nothing. **Effort:** S (human) → S (CC).
