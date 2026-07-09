@@ -278,6 +278,17 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
    plus bottom clearance for the floating toolbar. */
 .nb-editor__content .ProseMirror { outline: none; line-height: 1.68; padding: 10px var(--pad-x) 120px; }
 .nb-editor__content .ProseMirror:focus { outline: none; }
+/* Empty-note placeholder — makes the `/` slash affordance discoverable. Pure CSS (the
+   @tiptap/extension-placeholder dep isn't installed): an empty doc is a single paragraph whose
+   only child is ProseMirror's trailing <br>, so target that and drop the hint via ::before.
+   Vanishes the moment any text or a second block appears (:only-child / :has stop matching). */
+.nb-editor__content .ProseMirror > p:only-child:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: 'Start writing, or type / for AI…';
+  color: var(--muted-soft);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
 
 /* AI block: thin accent left rule + a quiet model bar. */
 .ai-block { border-left: 2px solid var(--accent); padding: 2px 0 2px 14px; margin: 14px 0; }

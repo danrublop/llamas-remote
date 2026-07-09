@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, statSync, utimesSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, statSync, utimesSync, existsSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MarkdownStore, makeEntry, serializeEntry } from './markdown-store';
@@ -153,6 +153,44 @@ describe('NotebookStore', () => {
     store.save(makeEntry({ id: 'e6', body: 'stable', tags: [], model: 'm', sourceApp: 'A' }));
     const summary = store.syncFromDisk();
     expect(summary).toEqual({ inserted: 0, reindexed: 0, tombstoned: 0, revived: 0 });
+  });
+
+  // Pins are serialized to frontmatter; deleting/rebuilding the index from disk must recover them.
+  it('preserves pinned across an index rebuild (pin survives DB delete)', () => {
+    store.save(makeEntry({ id: 'p1', body: 'pinned note', tags: [], model: 'm', sourceApp: 'A', pinned: true }));
+
+    // Simulate the DB being deleted and rebuilt from the markdown files on disk.
+    const rebuilt = new NotebookStore(files, new FakeIndex());
+    rebuilt.syncFromDisk();
+    expect(rebuilt.list().find((n) => n.id === 'p1')?.pinned).toBe(true);
+  });
+
+  // A present-but-unparseable file must stay visible — its content is still on disk.
+  it('does not tombstone a live note whose file became unparseable', () => {
+    store.save(makeEntry({ id: 'u1', body: 'still here', tags: [], model: 'm', sourceApp: 'A' }));
+    writeFileSync(join(dir, 'u1.md'), 'garbage without frontmatter', 'utf8'); // corrupt but present
+
+    const summary = store.syncFromDisk();
+    expect(summary.tombstoned).toBe(0);
+    expect(store.list().map((n) => n.id)).toContain('u1');
+  });
+
+  // One unreadable file (here: a directory named like an entry -> readFileSync EISDIR) must not
+  // abort the whole reconcile and hide every other note.
+  it('isolates an unreadable file — one bad entry does not abort the reconcile', () => {
+    store.save(makeEntry({ id: 'good', body: 'survivor', tags: [], model: 'm', sourceApp: 'A' }));
+    mkdirSync(join(dir, 'bad.md'));
+
+    expect(() => store.syncFromDisk()).not.toThrow();
+    expect(store.search('survivor').map((h) => h.id)).toEqual(['good']);
+  });
+
+  // FTS5 MATCH throws on stray operators/quotes; search must degrade to [] for both callers.
+  it('search returns [] when the index throws (bad FTS query) instead of surfacing it', () => {
+    const throwing = new FakeIndex();
+    throwing.search = () => { throw new Error('fts5: syntax error near ""'); };
+    const s = new NotebookStore(files, throwing);
+    expect(s.search('"')).toEqual([]);
   });
 });
 

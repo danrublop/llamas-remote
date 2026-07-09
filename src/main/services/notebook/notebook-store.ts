@@ -165,6 +165,7 @@ export class NotebookStore {
             sourceKind: action.meta?.sourceKind,
             createdAt: action.meta?.createdAt,
             imagePath: action.meta?.imagePath,
+            pinned: action.meta?.pinned,
           });
           if (action.kind === 'insert') summary.inserted++;
           else if (action.kind === 'reindex') summary.reindexed++;
@@ -182,6 +183,14 @@ export class NotebookStore {
   }
 
   search(query: string): SearchHit[] {
-    return this.index.search(query);
+    // FTS5 MATCH throws a syntax error on stray operators/quotes in raw user input (a bare `"`,
+    // `AND`, etc). Guard here so both callers (notebook:search + panel:search) degrade to no
+    // results instead of surfacing an error.
+    try {
+      return this.index.search(query);
+    } catch (e) {
+      console.warn('search failed for query', JSON.stringify(query), e);
+      return [];
+    }
   }
 }

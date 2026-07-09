@@ -47,11 +47,18 @@ describe('reconcileEntry', () => {
   });
 
   // Metadata must survive an index rebuild (e.g. fresh install) — carried from frontmatter.
-  it('carries frontmatter metadata on insert/reindex/revive', () => {
-    const meta = { title: 'My note', model: 'mistral:latest', sourceApp: 'Safari', sourceKind: 'text' as const, createdAt: '2026-05-25T00:00:00Z' };
+  it('carries frontmatter metadata (incl. pinned) on insert/reindex/revive', () => {
+    const meta = { title: 'My note', model: 'mistral:latest', sourceApp: 'Safari', sourceKind: 'text' as const, createdAt: '2026-05-25T00:00:00Z', pinned: true };
     expect(reconcileEntry(undefined, disk({ meta })).meta).toEqual(meta);
     expect(reconcileEntry(row({ indexedMtimeMs: 1000 }), disk({ mtimeMs: 2000, meta })).meta).toEqual(meta); // reindex
     expect(reconcileEntry(row({ tombstoned: true }), disk({ meta })).meta).toEqual(meta); // revive
+  });
+
+  // A present-but-unparseable file must never be tombstoned — the file (with content) is still
+  // on disk, so hiding it would look like data loss.
+  it('keeps the existing row for a present-but-unparseable file (no tombstone)', () => {
+    expect(reconcileEntry(row({ tombstoned: false }), disk({ unparseable: true })).kind).toBe('noop');
+    expect(reconcileEntry(undefined, disk({ unparseable: true })).kind).toBe('noop');
   });
 
   // The data-loss path the eng review flagged: when the markdown is newer, the

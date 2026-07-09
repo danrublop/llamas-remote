@@ -38,6 +38,10 @@ const api = {
   // Notes-app operations
   openSettings: () => ipcRenderer.send('open-settings'),
   list: (): Promise<NoteSummary[]> => ipcRenderer.invoke('notebook:list'),
+  /** Abort any in-flight inline generation (call on editor unmount). */
+  cancelGen: (): Promise<void> => ipcRenderer.invoke('notebook:cancel-gen'),
+  /** Re-read notes from disk and return the fresh summaries (call on window focus). */
+  resync: (): Promise<NoteSummary[]> => ipcRenderer.invoke('notebook:resync'),
   search: (query: string): Promise<Array<{ id: string; snippet: string; tags: string[] }>> => ipcRenderer.invoke('notebook:search', query),
   getBody: (id: string): Promise<string | null> => ipcRenderer.invoke('notebook:get', id),
   /** Body + AI-block metadata, for reconstructing AI blocks when a note loads. */

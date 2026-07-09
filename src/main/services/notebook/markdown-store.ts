@@ -175,22 +175,37 @@ export class MarkdownStore {
     for (const file of readdirSync(this.dir)) {
       if (!file.endsWith('.md')) continue;
       const full = join(this.dir, file);
-      const parsed = parseEntry(readFileSync(full, 'utf8'));
-      if (!parsed) continue;
-      out.push({
-        id: parsed.id,
-        body: parsed.body,
-        frontmatterTags: parsed.tags,
-        mtimeMs: statSync(full).mtimeMs,
-        meta: {
-          title: parsed.title || undefined,
-          model: parsed.model || undefined,
-          sourceApp: parsed.sourceApp || undefined,
-          sourceKind: parsed.sourceKind,
-          createdAt: parsed.createdAt || undefined,
-          imagePath: parsed.imagePath || undefined,
-        },
-      });
+      // Isolate per-file failures: a single permission/race error on one file must not abort
+      // the whole reconcile and hide every other note.
+      try {
+        const mtimeMs = statSync(full).mtimeMs;
+        const parsed = parseEntry(readFileSync(full, 'utf8'));
+        if (!parsed) {
+          // File is present but malformed. If its basename is a valid entry id, surface it as
+          // an unparseable entry so reconcile keeps the existing row instead of tombstoning a
+          // note whose file (with content) still sits on disk.
+          const id = file.slice(0, -3);
+          if (isValidEntryId(id)) out.push({ id, body: '', frontmatterTags: [], mtimeMs, unparseable: true });
+          continue;
+        }
+        out.push({
+          id: parsed.id,
+          body: parsed.body,
+          frontmatterTags: parsed.tags,
+          mtimeMs,
+          meta: {
+            title: parsed.title || undefined,
+            model: parsed.model || undefined,
+            sourceApp: parsed.sourceApp || undefined,
+            sourceKind: parsed.sourceKind,
+            createdAt: parsed.createdAt || undefined,
+            imagePath: parsed.imagePath || undefined,
+            pinned: parsed.pinned,
+          },
+        });
+      } catch (e) {
+        console.warn(`listDiskEntries: skipping unreadable file ${file}:`, e);
+      }
     }
     return out;
   }

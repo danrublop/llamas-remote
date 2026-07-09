@@ -16,6 +16,8 @@ interface FolderState { folders: Folder[]; assignments: Record<string, string> }
 interface NotebookAPI {
   openSettings: () => void;
   list: () => Promise<NoteSummary[]>;
+  resync: () => Promise<NoteSummary[]>; // syncFromDisk in main → fresh summaries (external-edit pickup)
+  cancelGen: () => Promise<void>;       // abort all in-flight inline AI-block generations
   search: (query: string) => Promise<Array<{ id: string; snippet: string; tags: string[] }>>;
   getBody: (id: string) => Promise<string | null>;
   getNote: (id: string) => Promise<NoteWithBlocks | null>;
@@ -148,6 +150,8 @@ function Notebook() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDelete = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const renameTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRename = useRef<{ id: string; title: string } | null>(null);
   const streamRef = useRef<HTMLDivElement>(null); // read-only pane for a streaming notch answer
   const searchRef = useRef<HTMLInputElement>(null);
   const renameRef = useRef<HTMLInputElement>(null);
@@ -163,6 +167,18 @@ function Notebook() {
   };
 
   const refresh = useCallback(async () => setNotes(await window.notebookAPI.list()), []);
+
+  // Persist any pending title rename now (debounce timer, note switch, or unmount), keyed to the
+  // note it came from. Same 400ms idiom as NotebookEditor.onUpdate — rename does a full file
+  // rewrite + FTS reindex + sidebar refresh, so we don't fire it per keystroke.
+  const flushRename = useCallback(() => {
+    if (renameTimer.current) { clearTimeout(renameTimer.current); renameTimer.current = null; }
+    const p = pendingRename.current;
+    if (!p) return;
+    pendingRename.current = null;
+    window.notebookAPI.rename(p.id, p.title).then(refresh).catch(() => {});
+  }, [refresh]);
+
   const refreshFolders = useCallback(async () => {
     const st = await window.notebookAPI.foldersGet();
     setFolders(st.folders);
@@ -195,6 +211,7 @@ function Notebook() {
   }, []);
 
   const selectNote = useCallback(async (id: string, fromList?: NoteSummary[]) => {
+    flushRename(); // commit any pending rename to the OUTGOING note before we switch away
     streamingRef.current = false;
     setStreaming('idle');
     setView('notes');
@@ -210,7 +227,7 @@ function Notebook() {
     if (selectedRef.current !== id) return; // selection changed while loading
     loadEditor(note?.body ?? '', note?.aiBlocks ?? []);
     setImage(img);
-  }, [notes, loadEditor]);
+  }, [notes, loadEditor, flushRename]);
 
   useEffect(() => {
     (async () => {
@@ -262,8 +279,11 @@ function Notebook() {
   useEffect(() => { if (renamingFolder) { renameRef.current?.focus(); renameRef.current?.select(); } }, [renamingFolder]);
 
   function onTitleChange(v: string) {
-    setTitle(v);
-    if (selectedId) window.notebookAPI.rename(selectedId, v).then(refresh).catch(() => {});
+    setTitle(v); // immediate: the input is controlled
+    if (!selectedId) return;
+    pendingRename.current = { id: selectedId, title: v };
+    if (renameTimer.current) clearTimeout(renameTimer.current);
+    renameTimer.current = setTimeout(flushRename, 400);
   }
 
   const closeActions = () => setActionTarget(null);
@@ -289,6 +309,25 @@ function Notebook() {
 
   // Finalize a pending (toast-window) delete if the window closes before the timer fires.
   useEffect(() => commitDelete, [commitDelete]);
+
+  // Flush a pending title rename if the window closes before its debounce fires.
+  useEffect(() => flushRename, [flushRename]);
+
+  // External edits to the on-disk .md files aren't noticed until relaunch — re-sync from disk on
+  // window focus so returning to the app picks them up. Debounced, and skipped while a notch
+  // answer is streaming so we don't fight an in-progress write.
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const onFocus = () => {
+      if (streamingRef.current) return;
+      if (t) clearTimeout(t);
+      t = setTimeout(async () => {
+        try { setNotes(await window.notebookAPI.resync()); } catch { /* ignore */ }
+      }, 250);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => { if (t) clearTimeout(t); window.removeEventListener('focus', onFocus); };
+  }, []);
 
   // Brief auto-dismissing status toast (no Undo button).
   const showInfo = useCallback((msg: string) => {
@@ -671,6 +710,12 @@ function Notebook() {
             // Read-only pane while a notch answer streams in (becomes a saved note on done).
             <div ref={streamRef} className="editor streaming-pane" />
           ) : (
+            // ponytail: userCommands intentionally not passed → slash menu shows built-ins only.
+            // Custom commands are stored (settings-service.getCustomPresets / customPresets) but
+            // have no IPC channel to reach this renderer and no settings UI to create them, so
+            // nothing can populate them yet. Built-ins all resolve, so no misleading "couldn't
+            // reach model" error is reachable. Wire userCommands once a custom-command settings UI
+            // + a settings:get-custom-presets IPC exist.
             <NotebookEditor
               key={editorKey}
               noteId={selectedId}

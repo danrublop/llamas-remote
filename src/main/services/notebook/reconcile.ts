@@ -39,6 +39,7 @@ export interface DiskMeta {
   sourceKind?: 'text' | 'image';
   createdAt?: string;
   imagePath?: string;
+  pinned?: boolean;
 }
 
 /** What the markdown file on disk currently contains. */
@@ -52,6 +53,8 @@ export interface DiskEntry {
   mtimeMs: number;
   /** Other frontmatter (title/model/source/createdAt) so reconcile can restore it. */
   meta?: DiskMeta;
+  /** File exists but couldn't be parsed — present so reconcile won't tombstone a live note. */
+  unparseable?: boolean;
 }
 
 export interface ReconcileAction {
@@ -101,6 +104,12 @@ export function reconcileEntry(
     }
     const id = row?.id ?? 'unknown';
     return { kind: 'noop', id, reason: 'no file and nothing live to tombstone' };
+  }
+
+  // File is present but couldn't be parsed. Never tombstone it — the file (with content)
+  // still exists on disk, so hiding it would look like data loss. Keep any existing row as-is.
+  if (disk.unparseable) {
+    return { kind: 'noop', id: disk.id, reason: 'file present but unparseable — keeping existing row' };
   }
 
   // File exists but was never indexed.

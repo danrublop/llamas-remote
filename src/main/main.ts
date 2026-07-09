@@ -1,6 +1,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, systemPreferences, shell, dialog } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { join, extname, basename } from 'path';
+import { pathToFileURL } from 'url';
 import { randomUUID } from 'crypto';
 import { rmSync, existsSync, readFileSync, statSync } from 'fs';
 import { OllamaProcessService } from './services/ollama-process.service';
@@ -76,9 +77,6 @@ class MainProcess {
   async initialize(): Promise<void> {
     await app.whenReady();
 
-    // Start Ollama automatically (auto-install/start handled by the service).
-    await this.startOllamaIfNeeded();
-
     // Wire the notch panel stack (capture + controller + notebook).
     this.setupNotch();
 
@@ -93,6 +91,11 @@ class MainProcess {
     this.setupNotchIpc();
     this.handleAppLifecycle();
     this.setupAutoUpdate();
+
+    // Start Ollama automatically (auto-install/start handled by the service). Fire-and-forget
+    // AFTER the UI exists — the model pull can take minutes, and awaiting it here left first
+    // launch with no tray/notch until it finished.
+    void this.startOllamaIfNeeded();
 
     // No dock icon — this is a menu-bar utility.
     if (process.platform === 'darwin') app.dock?.hide();
@@ -185,10 +188,16 @@ class MainProcess {
       if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
       return { action: 'deny' };
     });
+    // The only file:// URLs we ever load are these two bundled pages (see createNotchPanel /
+    // createNotebookWindow). Allowing the bare file:// scheme would let injected/app code load
+    // ANY local file with the preload bridge attached — so pin the allow to these exact hrefs.
+    const allowedPages = new Set(
+      ['panel.html', 'notebook.html'].map((f) => pathToFileURL(join(__dirname, '..', f)).href),
+    );
     const guard = (e: Electron.Event, url: string): void => {
-      // Allow only in-app navigation/reload of the bundled file:// page; externalize web
-      // links, block everything else.
-      if (url.startsWith('file://')) return;
+      // Allow only in-app navigation/reload of our own bundled pages (ignore hash/query);
+      // externalize web links, block everything else.
+      if (allowedPages.has(url.split(/[?#]/)[0])) return;
       e.preventDefault();
       if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
     };
@@ -728,6 +737,19 @@ class MainProcess {
     // boundary: the id becomes a filename downstream, so a renderer-supplied `../` or
     // absolute path must be rejected before it can read/delete files outside the notebook dir.
     ipcMain.handle('notebook:list', () => this.notebookStore?.list() ?? []);
+    // Cancel any in-flight inline generation (called on editor unmount so a run doesn't keep
+    // streaming into a block whose editor is gone).
+    ipcMain.handle('notebook:cancel-gen', () => { this.inlineGen?.abortAll(); });
+    // Re-read notes from disk and hand back the fresh summaries (called on window focus so
+    // external edits show up). Guarded — a sync failure returns whatever we have.
+    ipcMain.handle('notebook:resync', () => {
+      try {
+        this.notebookStore?.syncFromDisk();
+        return this.notebookStore?.list() ?? [];
+      } catch {
+        return [];
+      }
+    });
     ipcMain.handle('notebook:search', (_e, query: string) => this.notebookStore?.search(query) ?? []);
     ipcMain.handle('notebook:get', (_e, id: string) => (isValidEntryId(id) ? this.notebookStore?.getBody(id) ?? null : null));
     // Body + AI-block sidecar in one round trip, so the editor can reconstruct AI blocks on
@@ -782,12 +804,18 @@ class MainProcess {
       try { return this.folderStore?.createFolder(name, parentId ?? null) ?? null; }
       catch { return null; }
     });
-    ipcMain.handle('folders:rename', (_e, id: string, name: string) => { this.folderStore?.renameFolder(id, name); });
-    ipcMain.handle('folders:delete', (_e, id: string) => { this.folderStore?.deleteFolder(id); });
-    ipcMain.handle('folders:move-note', (_e, noteId: string, folderId: string | null) => {
-      if (isValidEntryId(noteId)) this.folderStore?.moveNote(noteId, folderId ?? null);
+    ipcMain.handle('folders:rename', (_e, id: string, name: string) => {
+      try { this.folderStore?.renameFolder(id, name); } catch { /* ignore */ }
     });
-    ipcMain.handle('folders:move-folder', (_e, id: string, parentId: string | null) => { this.folderStore?.moveFolder(id, parentId ?? null); });
+    ipcMain.handle('folders:delete', (_e, id: string) => {
+      try { this.folderStore?.deleteFolder(id); } catch { /* ignore */ }
+    });
+    ipcMain.handle('folders:move-note', (_e, noteId: string, folderId: string | null) => {
+      try { if (isValidEntryId(noteId)) this.folderStore?.moveNote(noteId, folderId ?? null); } catch { /* ignore */ }
+    });
+    ipcMain.handle('folders:move-folder', (_e, id: string, parentId: string | null) => {
+      try { this.folderStore?.moveFolder(id, parentId ?? null); } catch { /* ignore */ }
+    });
 
     // ── Custom window controls (native traffic lights are hidden) ─────────────────────
     ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize());

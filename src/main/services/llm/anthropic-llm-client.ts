@@ -24,10 +24,16 @@ export class AnthropicLlmClient implements LlmClient {
   async generate(opts: { model: string; prompt: string; imagePath?: string; onToken?: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
     const key = this.getKey();
     if (!key) throw new Error('No Anthropic API key — add one in Settings.');
+    // Per-model output ceiling. 4096 silently truncated long answers; these are the real caps.
+    // Haiku 3.5 maxes at 8192; Sonnet 4.x streams up to 64k. A single flat value would have to
+    // stay ≤ the lowest model's cap (8192) or the API 400s, so key it off the id.
+    // ponytail: covers the two curated cloud models (see multi-llm-client CLOUD_MODELS);
+    // a newly-added low-ceiling Anthropic model would need adding here.
+    const maxTokens = /haiku/i.test(opts.model) ? 8192 : 64000;
     try {
       const res = await axios.post(
         'https://api.anthropic.com/v1/messages',
-        { model: opts.model, max_tokens: 4096, stream: true, messages: [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }] },
+        { model: opts.model, max_tokens: maxTokens, stream: true, messages: [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }] },
         {
           headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
           responseType: 'stream',
@@ -40,6 +46,7 @@ export class AnthropicLlmClient implements LlmClient {
         let full = '';
         let buffer = '';
         let settled = false;
+        let stopReason: string | undefined; // arrives on message_delta, read on message_stop
         // Destroy the socket + detach listeners on the terminal event so trailing SSE events
         // after message_stop can't keep calling onToken once we've resolved.
         const finish = (fn: () => void) => {
@@ -67,7 +74,16 @@ export class AnthropicLlmClient implements LlmClient {
                 // Anthropic streams overloaded/rate-limit errors in-band over a 200 response.
                 finish(() => reject(new Error(`Anthropic stream error: ${evt.error?.message || 'unknown error'}`)));
                 return;
+              } else if (evt.type === 'message_delta' && typeof evt.delta?.stop_reason === 'string') {
+                stopReason = evt.delta.stop_reason;
               } else if (evt.type === 'message_stop') {
+                // Anthropic ends a length-capped answer with a normal message_stop, so a
+                // truncated response would otherwise resolve as if it were complete. Mark it.
+                if (stopReason === 'max_tokens') {
+                  const marker = '\n\n_(truncated — response hit the length limit)_';
+                  full += marker;
+                  opts.onToken?.(marker);
+                }
                 finish(() => resolve(full));
                 return;
               }
