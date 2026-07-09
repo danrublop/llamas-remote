@@ -33,6 +33,28 @@ import { BUILT_IN_PRESETS } from './services/presets/presets';
 const DEFAULT_TEXT_MODEL = 'mistral:latest';
 const VISION_MODEL = 'llava:latest';
 
+// Sanitize a renderer-supplied tag list before it reaches frontmatter. Tags can originate
+// from the model/clipboard, so coerce to trimmed non-empty strings, cap each tag's length
+// and the total count, and dedupe case-insensitively (first-seen casing wins).
+const MAX_TAG_LEN = 64;
+const MAX_TAGS = 50;
+function sanitizeTags(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== 'string') continue;
+    const tag = raw.trim().slice(0, MAX_TAG_LEN);
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+    if (out.length >= MAX_TAGS) break;
+  }
+  return out;
+}
+
 // ── Llamas Remote main process ───────────────────────────────────────────────
 //
 //   hotkey / tray ─▶ capture selection ─▶ show notch panel ─▶ panel runs query
@@ -788,6 +810,15 @@ class MainProcess {
     });
     ipcMain.handle('notebook:rename', (_e, id: string, title: string) => { if (isValidEntryId(id)) this.notebookStore?.rename(id, title); });
     ipcMain.handle('notebook:pin', (_e, id: string, pinned: boolean) => { if (isValidEntryId(id)) this.notebookStore?.setPinned(id, pinned); });
+    // Replace a note's tag set. Tags are user/model/clipboard-sourced, so sanitize at the
+    // boundary: coerce to trimmed non-empty strings, cap length + count, and dedupe
+    // case-insensitively before it reaches frontmatter.
+    ipcMain.handle('notebook:set-tags', (_e, id: string, tags: unknown) => {
+      if (!isValidEntryId(id)) return;
+      this.notebookStore?.setTags(id, sanitizeTags(tags));
+    });
+    // Distinct tags across all live notes, for the tag filter list.
+    ipcMain.handle('notebook:all-tags', () => this.notebookStore?.getAllTags() ?? []);
     ipcMain.handle('notebook:update-body', (_e, id: string, body: string, aiBlocks?: unknown) => {
       if (!isValidEntryId(id)) return;
       // Only touch the sidecar when the renderer actually sent blocks. Undefined = body-only

@@ -36,6 +36,8 @@ export interface NoteSummary {
   id: string;
   title: string;
   snippet: string;
+  /** Tags from the note's frontmatter (source of truth), for chips + filtering. */
+  tags: string[];
   sourceApp?: string;
   model?: string;
   pinned: boolean;
@@ -82,6 +84,11 @@ export interface NotebookIndex {
   setTitle(id: string, title: string): void;
   /** Pin/unpin a note. */
   setPinned(id: string, pinned: boolean): void;
+  /** Replace a note's tag set (used when the file isn't on disk; the store persists to
+      frontmatter first and this keeps the index in sync). */
+  setTags(id: string, tags: string[]): void;
+  /** Distinct tags across all live (non-tombstoned) notes, for the filter/tag list. */
+  getAllTags(): string[];
   /** Update a note's body (in-app edit). */
   updateBody(id: string, body: string): void;
   /** Absolute path to a note's capture image, or null. */

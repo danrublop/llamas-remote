@@ -39,12 +39,21 @@ class FakeIndex implements NotebookIndex {
       .map(([id, r]) => ({ id, snippet: r.body.slice(0, 40), tags: r.tags }));
   }
   list(): NoteSummary[] {
-    return [...this.rows.entries()].filter(([, r]) => !r.tombstoned).map(([id, r]) => ({ id, title: r.title ?? r.body.slice(0, 40), snippet: r.body.slice(0, 80), pinned: r.pinned, createdAt: '' }));
+    return [...this.rows.entries()].filter(([, r]) => !r.tombstoned).map(([id, r]) => ({ id, title: r.title ?? r.body.slice(0, 40), snippet: r.body.slice(0, 80), tags: r.tags, pinned: r.pinned, createdAt: '' }));
+  }
+  getAllTags(): string[] {
+    const seen = new Map<string, string>();
+    for (const [, r] of this.rows) {
+      if (r.tombstoned) continue;
+      for (const t of r.tags) { const k = t.trim().toLowerCase(); if (k && !seen.has(k)) seen.set(k, t.trim()); }
+    }
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
   }
   getBody(id: string): string | null { const r = this.rows.get(id); return r && !r.tombstoned ? r.body : null; }
   getImagePath(): string | null { return null; }
   setTitle(id: string, title: string): void { const r = this.rows.get(id); if (r) r.title = title; }
   setPinned(id: string, pinned: boolean): void { const r = this.rows.get(id); if (r) r.pinned = pinned; }
+  setTags(id: string, tags: string[]): void { const r = this.rows.get(id); if (r) r.tags = tags; }
   updateBody(id: string, body: string): void { const r = this.rows.get(id); if (r) r.body = body; }
 }
 
@@ -191,6 +200,45 @@ describe('NotebookStore', () => {
     throwing.search = () => { throw new Error('fts5: syntax error near ""'); };
     const s = new NotebookStore(files, throwing);
     expect(s.search('"')).toEqual([]);
+  });
+});
+
+describe('NotebookStore — tags', () => {
+  it('setTags persists to frontmatter (source of truth) and updates the index list', () => {
+    store.save(makeEntry({ id: 't1', body: 'b', tags: ['old'], model: 'm', sourceApp: 'A' }));
+    store.setTags('t1', ['alpha', 'beta']);
+    expect(files.read('t1')?.tags).toEqual(['alpha', 'beta']); // written to the .md
+    expect(store.list().find((n) => n.id === 't1')?.tags).toEqual(['alpha', 'beta']); // index in sync
+  });
+
+  // Regression for the esc fix: a tag containing a comma or bracket must round-trip intact
+  // (the old bare comma-joined flow list corrupted these on parse).
+  it('setTags round-trips a tag containing a comma / bracket through disk', () => {
+    store.save(makeEntry({ id: 't2', body: 'b', tags: [], model: 'm', sourceApp: 'A' }));
+    store.setTags('t2', ['a,b', 'c]d', 'e[f']);
+    expect(files.read('t2')?.tags).toEqual(['a,b', 'c]d', 'e[f']);
+
+    // And they survive a full index rebuild from the markdown files.
+    const rebuilt = new NotebookStore(files, new FakeIndex());
+    rebuilt.syncFromDisk();
+    expect(rebuilt.list().find((n) => n.id === 't2')?.tags).toEqual(['a,b', 'c]d', 'e[f']);
+  });
+
+  it('getAllTags returns distinct live tags (deduped case-insensitively, first casing wins)', () => {
+    store.save(makeEntry({ id: 'g1', body: 'b', tags: ['Code', 'Safari'], model: 'm', sourceApp: 'A' }));
+    store.save(makeEntry({ id: 'g2', body: 'b', tags: ['code', 'React'], model: 'm', sourceApp: 'A' }));
+    expect(store.getAllTags()).toEqual(['Code', 'React', 'Safari']);
+  });
+
+  it('getAllTags excludes tags that only live on tombstoned notes', () => {
+    store.save(makeEntry({ id: 'g3', body: 'b', tags: ['only-here'], model: 'm', sourceApp: 'A' }));
+    store.hide('g3');
+    expect(store.getAllTags()).not.toContain('only-here');
+  });
+
+  it('list() includes each note’s tags', () => {
+    store.save(makeEntry({ id: 'l1', body: 'b', tags: ['x', 'y'], model: 'm', sourceApp: 'A' }));
+    expect(store.list().find((n) => n.id === 'l1')?.tags).toEqual(['x', 'y']);
   });
 });
 

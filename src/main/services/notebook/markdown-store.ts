@@ -26,6 +26,20 @@ function esc(value: string): string {
   return /[:#\n]/.test(value) ? JSON.stringify(value) : value;
 }
 
+/**
+ * Serialize the tag list. Tags are user-editable, so a tag containing a comma, a bracket,
+ * a quote, a newline, or leading/trailing whitespace would corrupt the bare comma-joined
+ * flow list on round-trip (the reader splits on `,` and strips `[`/`]` before unescaping).
+ * When any tag needs escaping we emit the whole array as strict JSON (`tags: ["a,b","c"]`),
+ * which parseEntry decodes atomically; otherwise we keep the readable bare form for the
+ * common case (and for backward-compatible files written before this fix).
+ */
+function serializeTags(tags: readonly string[]): string {
+  const needsJson = tags.some((t) => /[,[\]"\n]/.test(t) || t.trim() !== t);
+  if (needsJson) return JSON.stringify(tags);
+  return `[${tags.map(esc).join(', ')}]`;
+}
+
 function unesc(raw: string): string {
   const v = raw.trim();
   if (v.startsWith('"') && v.endsWith('"')) {
@@ -49,7 +63,6 @@ export function isValidEntryId(id: unknown): id is string {
 }
 
 export function serializeEntry(entry: NotebookEntry): string {
-  const tags = entry.tags.map(esc).join(', ');
   const fm = [
     '---',
     `id: ${esc(entry.id)}`,
@@ -60,7 +73,7 @@ export function serializeEntry(entry: NotebookEntry): string {
     `source_kind: ${entry.sourceKind}`,
     `pinned: ${entry.pinned ? 'true' : 'false'}`,
     ...(entry.imagePath ? [`image: ${esc(entry.imagePath)}`] : []),
-    `tags: [${tags}]`,
+    `tags: ${serializeTags(entry.tags)}`,
     '---',
     '',
   ].join('\n');
@@ -97,8 +110,23 @@ export function parseEntry(text: string): ParsedFile | null {
     else if (key === 'image') e.imagePath = unesc(val);
     else if (key === 'pinned') e.pinned = val === 'true';
     else if (key === 'tags') {
-      const inner = val.replace(/^\[/, '').replace(/\]$/, '').trim();
-      e.tags = inner.length ? inner.split(',').map((t) => unesc(t)).filter(Boolean) : [];
+      const raw = val.trim();
+      // Strict-JSON form (written when a tag has a comma/bracket/quote/whitespace): decode
+      // atomically so those tags survive intact. Falls through to the legacy bare-list parse
+      // for `tags: [a, b]` files (invalid JSON — unquoted — so JSON.parse throws).
+      let parsed: string[] | null = null;
+      if (raw.startsWith('[') && raw.endsWith(']')) {
+        try {
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) parsed = arr.filter((t): t is string => typeof t === 'string');
+        } catch { /* not JSON — legacy bare list below */ }
+      }
+      if (parsed) {
+        e.tags = parsed.filter(Boolean);
+      } else {
+        const inner = raw.replace(/^\[/, '').replace(/\]$/, '').trim();
+        e.tags = inner.length ? inner.split(',').map((t) => unesc(t)).filter(Boolean) : [];
+      }
     }
   }
   if (!e.id) return null;

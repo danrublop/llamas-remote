@@ -198,6 +198,31 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .note-meta .nm-model { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-soft); font-weight: 500; }
 .note-meta .nm-dot { opacity: 0.5; }
 
+/* ── Tags ── quiet pills on the badge surface; chips reuse --surface-strong + --hairline */
+.tag-row { padding: 6px var(--pad-x) 0; }
+.tag-editor { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 2px 0 8px; background: var(--surface-strong); border-radius: 11px; font-size: 11.5px; color: var(--ink-soft); }
+.tag-chip.static { padding: 0 8px; height: 20px; }
+.tag-chip-label { border: none; background: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-chip-label:hover { color: var(--accent); }
+.tag-chip-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: none; border-radius: 8px; background: none; padding: 0; color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer; }
+.tag-chip-x:hover { background: var(--accent-soft); color: var(--accent); }
+.tag-add { border: none; outline: none; background: none; font-family: var(--sans); font-size: 11.5px; color: var(--ink); padding: 2px 4px; min-width: 84px; height: 22px; }
+.tag-add::placeholder { color: var(--muted-soft); }
+
+/* Sidebar note-row tag chips: smaller, flatter, filter on click */
+.note-row .row-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.row-tag { border: none; background: var(--surface-strong); color: var(--muted); border-radius: 9px; padding: 1px 7px; font-size: 10.5px; font-family: var(--sans); cursor: pointer; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-tag:hover { color: var(--accent); }
+.row-tag.active { background: var(--accent-soft); color: var(--accent); }
+.row-tag-more { font-size: 10.5px; color: var(--muted-soft); align-self: center; }
+
+/* Active tag filter header at the top of the note list */
+.tag-filter-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px 8px; margin-bottom: 2px; border-bottom: 1px solid var(--hairline-soft); }
+.tfb-label { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+.tfb-clear { border: none; background: none; color: var(--accent); font-family: var(--sans); font-size: 11.5px; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.tfb-clear:hover { background: var(--accent-soft); }
+
 /* Formatting controls — floating bar, bottom-right of the editor */
 .toolbar { position: absolute; bottom: 18px; right: 22px; z-index: 5; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 12px; box-shadow: 0 2px 10px rgba(38,37,30,0.06); }
 .toolbar button { min-width: 28px; height: 28px; padding: 0 7px; border: 1px solid transparent; background: none; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; }

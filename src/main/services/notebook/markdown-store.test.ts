@@ -61,6 +61,25 @@ describe('serializeEntry ↔ parseEntry round-trip', () => {
     expect(roundTrip({ ...base, tags: [] })?.tags).toEqual([]);
   });
 
+  // Tags are user-editable: a comma, bracket, quote, or surrounding whitespace must not
+  // corrupt the flow list (the reader splits on ',' and strips '[' / ']'). These force the
+  // strict-JSON serialization path.
+  it('round-trips tags containing commas, brackets and quotes intact', () => {
+    const e = { ...base, tags: ['a,b', 'c]d', 'e[f', 'quote"y', 'plain'] };
+    expect(roundTrip(e)?.tags).toEqual(['a,b', 'c]d', 'e[f', 'quote"y', 'plain']);
+  });
+
+  it('preserves a tag with internal whitespace', () => {
+    const e = { ...base, tags: ['two words', 'plain'] };
+    expect(roundTrip(e)?.tags).toEqual(['two words', 'plain']);
+  });
+
+  // Files written before the esc fix use a bare comma-joined list; that form must still parse.
+  it('still reads legacy bare comma-list tags', () => {
+    const legacy = '---\nid: legacy1\ntitle: t\ntags: [code, safari]\n---\nbody';
+    expect(parseEntry(legacy)?.tags).toEqual(['code', 'safari']);
+  });
+
   it('handles an empty body', () => {
     expect(roundTrip({ ...base, body: '' })?.body).toBe('');
   });

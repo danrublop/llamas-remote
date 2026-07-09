@@ -175,21 +175,52 @@ export class SqliteNotebookIndex implements NotebookIndex {
     // keeps this ordered scan cheap; the real search path stays capped in search().)
     const rows = this.db
       .prepare(
-        `SELECT id, title, body, source_app AS sourceApp, model, image_path AS imagePath, pinned, created_at AS createdAt
+        `SELECT id, title, body, tags, source_app AS sourceApp, model, image_path AS imagePath, pinned, created_at AS createdAt
          FROM entries WHERE tombstoned = 0
          ORDER BY pinned DESC, created_at DESC`,
       )
-      .all() as Array<{ id: string; title: string | null; body: string; sourceApp: string | null; model: string | null; imagePath: string | null; pinned: number; createdAt: string | null }>;
+      .all() as Array<{ id: string; title: string | null; body: string; tags: string; sourceApp: string | null; model: string | null; imagePath: string | null; pinned: number; createdAt: string | null }>;
     return rows.map((r) => ({
       id: r.id,
       title: deriveTitle(r.title, r.body),
       snippet: stripHtml(r.body).slice(0, 80),
+      tags: safeParseTags(r.tags),
       sourceApp: r.sourceApp ?? undefined,
       model: r.model ?? undefined,
       imagePath: r.imagePath ?? undefined,
       pinned: r.pinned === 1,
       createdAt: r.createdAt ?? '',
     }));
+  }
+
+  // Distinct tags over live notes. Deduped case-insensitively (first-seen casing wins) and
+  // sorted for a stable filter list. Backs notebook:all-tags.
+  getAllTags(): string[] {
+    const rows = this.db
+      .prepare('SELECT tags FROM entries WHERE tombstoned = 0')
+      .all() as Array<{ tags: string }>;
+    const seen = new Map<string, string>();
+    for (const r of rows) {
+      for (const tag of safeParseTags(r.tags)) {
+        const key = tag.trim().toLowerCase();
+        if (key && !seen.has(key)) seen.set(key, tag.trim());
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  }
+
+  // Replace a note's tag set in the index and rebuild its FTS row (tags are an indexed
+  // column). Mirrors updateBody's FTS-refresh pattern. Used as the store's fallback when a
+  // note has no file on disk; the normal path persists via upsert.
+  setTags(id: string, tags: string[]): void {
+    const tx = this.db.transaction(() => {
+      this.db.prepare('UPDATE entries SET tags = ? WHERE id = ?').run(JSON.stringify(tags), id);
+      const body = (this.db.prepare('SELECT body FROM entries WHERE id = ?').get(id) as { body: string } | undefined)?.body;
+      if (body === undefined) return;
+      this.db.prepare('DELETE FROM entries_fts WHERE id = ?').run(id);
+      this.db.prepare('INSERT INTO entries_fts (id, body, tags) VALUES (?, ?, ?)').run(id, body, tags.join(' '));
+    });
+    tx();
   }
 
   getBody(id: string): string | null {

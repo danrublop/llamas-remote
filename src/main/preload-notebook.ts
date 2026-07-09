@@ -24,6 +24,7 @@ export interface NoteSummary {
   id: string;
   title: string;
   snippet: string;
+  tags: string[];
   sourceApp?: string;
   model?: string;
   imagePath?: string;
@@ -50,6 +51,10 @@ const api = {
   getImage: (id: string): Promise<string | null> => ipcRenderer.invoke('notebook:image', id),
   rename: (id: string, title: string): Promise<void> => ipcRenderer.invoke('notebook:rename', id, title),
   setPinned: (id: string, pinned: boolean): Promise<void> => ipcRenderer.invoke('notebook:pin', id, pinned),
+  /** Replace a note's tags (persisted to frontmatter + reindexed). */
+  setTags: (id: string, tags: string[]): Promise<void> => ipcRenderer.invoke('notebook:set-tags', id, tags),
+  /** Distinct tags across all live notes, for the tag filter. */
+  getAllTags: (): Promise<string[]> => ipcRenderer.invoke('notebook:all-tags'),
   /** Persist a note's body; pass `aiBlocks` to also rewrite its AI-block sidecar (omit to leave it). */
   updateBody: (id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>): Promise<void> =>
     ipcRenderer.invoke('notebook:update-body', id, body, aiBlocks),

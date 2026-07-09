@@ -81,12 +81,30 @@ export class MemoryNotebookIndex implements NotebookIndex {
         id,
         title: deriveTitle(r.title, r.body),
         snippet: stripHtml(r.body).slice(0, 80),
+        tags: r.tags,
         sourceApp: r.sourceApp,
         model: r.model,
         imagePath: r.imagePath,
         pinned: r.pinned,
         createdAt: r.createdAt ?? '',
       }));
+  }
+
+  getAllTags(): string[] {
+    const seen = new Map<string, string>();
+    for (const [, r] of this.rows) {
+      if (r.tombstoned) continue;
+      for (const tag of r.tags) {
+        const key = tag.trim().toLowerCase();
+        if (key && !seen.has(key)) seen.set(key, tag.trim());
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  }
+
+  setTags(id: string, tags: string[]): void {
+    const r = this.rows.get(id);
+    if (r) r.tags = tags;
   }
 
   getBody(id: string): string | null {

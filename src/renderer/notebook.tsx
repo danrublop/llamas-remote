@@ -8,7 +8,7 @@ import type { Editor } from '@tiptap/react';
 import './notebook.css';
 
 interface NotebookMeta { prompt: string; selection: string; sourceApp?: string; model: string }
-interface NoteSummary { id: string; title: string; snippet: string; sourceApp?: string; model?: string; imagePath?: string; pinned: boolean; createdAt: string }
+interface NoteSummary { id: string; title: string; snippet: string; tags: string[]; sourceApp?: string; model?: string; imagePath?: string; pinned: boolean; createdAt: string }
 interface AIBlockMeta { blockId: string; prompt: string; model: string; commandId?: string; selection?: string; createdAt: string }
 interface NoteWithBlocks { body: string; aiBlocks: AIBlockMeta[] }
 interface Folder { id: string; name: string; parentId: string | null }
@@ -24,6 +24,8 @@ interface NotebookAPI {
   getImage: (id: string) => Promise<string | null>;
   rename: (id: string, title: string) => Promise<void>;
   setPinned: (id: string, pinned: boolean) => Promise<void>;
+  setTags: (id: string, tags: string[]) => Promise<void>;
+  getAllTags: () => Promise<string[]>;
   updateBody: (id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>) => Promise<void>;
   hide: (id: string) => Promise<void>;
   restore: (id: string) => Promise<void>;
@@ -96,6 +98,47 @@ const loadExpanded = (): Set<string> => {
   catch { return new Set(); }
 };
 
+// Tag chips + inline add/remove for the open note. Tag text is untrusted (model/clipboard),
+// so it only ever reaches the DOM through React children (textContent) — never innerHTML.
+function TagEditor({ tags, allTags, onChange, onFilter }: {
+  tags: string[];
+  allTags: string[];
+  onChange: (tags: string[]) => void;
+  onFilter: (tag: string) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const t = draft.trim();
+    setDraft('');
+    if (!t || tags.some((x) => x.toLowerCase() === t.toLowerCase())) return;
+    onChange([...tags, t]);
+  };
+  const remove = (tag: string) => onChange(tags.filter((x) => x !== tag));
+  return (
+    <div className="tag-editor">
+      {tags.map((t) => (
+        <span key={t} className="tag-chip">
+          <button className="tag-chip-label" onClick={() => onFilter(t)} title={`Show notes tagged “${t}”`}>{t}</button>
+          <button className="tag-chip-x" onClick={() => remove(t)} title="Remove tag" aria-label={`Remove tag ${t}`}>×</button>
+        </span>
+      ))}
+      <input
+        className="tag-add"
+        list="nb-all-tags"
+        placeholder={tags.length ? 'Add tag…' : 'Add a tag…'}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); add(); }
+          else if (e.key === 'Backspace' && !draft && tags.length) remove(tags[tags.length - 1]);
+        }}
+        onBlur={add}
+      />
+      <datalist id="nb-all-tags">{allTags.map((t) => <option key={t} value={t} />)}</datalist>
+    </div>
+  );
+}
+
 function Notebook() {
   const [notes, setNotes] = useState<NoteSummary[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -117,6 +160,8 @@ function Notebook() {
   const [size, setSize] = useState(localStorage.getItem('nb-size') || '16');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<NoteSummary[] | null>(null); // null = not searching
+  const [tagFilter, setTagFilter] = useState<string | null>(null); // sidebar filtered to this tag
+  const [allTags, setAllTags] = useState<string[]>([]); // distinct live tags (add-tag suggestions)
   const [searchOpen, setSearchOpen] = useState(false); // search modal
   const [actionTarget, setActionTarget] = useState<{ kind: 'note'; note: NoteSummary } | { kind: 'folder'; folder: Folder } | null>(null); // left-click actions modal
   const [createOpen, setCreateOpen] = useState(false); // "create note/folder" modal (empty-sidebar two-finger click)
@@ -162,6 +207,17 @@ function Notebook() {
   };
 
   const refresh = useCallback(async () => setNotes(await window.notebookAPI.list()), []);
+  const refreshTags = useCallback(async () => {
+    try { setAllTags(await window.notebookAPI.getAllTags()); } catch { /* ignore */ }
+  }, []);
+
+  // Persist a note's tags (frontmatter is source of truth → main writes the .md + reindexes),
+  // then refresh the list (chips) and the distinct-tag suggestions.
+  const saveTags = useCallback(async (id: string, tags: string[]) => {
+    await window.notebookAPI.setTags(id, tags).catch(() => {});
+    await refresh();
+    refreshTags();
+  }, [refresh, refreshTags]);
 
   // Persist any pending title rename now (debounce timer, note switch, or unmount), keyed to the
   // note it came from. Same 400ms idiom as NotebookEditor.onUpdate — rename does a full file
@@ -226,7 +282,7 @@ function Notebook() {
 
   useEffect(() => {
     (async () => {
-      const [list] = await Promise.all([window.notebookAPI.list(), refreshFolders()]);
+      const [list] = await Promise.all([window.notebookAPI.list(), refreshFolders(), refreshTags()]);
       setNotes(list);
       if (list.length) selectNote(list[0].id, list);
     })();
@@ -249,6 +305,7 @@ function Notebook() {
       streamingRef.current = false; setStreaming('idle');
       const list = await window.notebookAPI.list();
       setNotes(list);
+      refreshTags(); // a captured note may carry auto tags (sourceApp/language)
       selectNote(id, list); // load the freshly-saved note into the editor
     });
     const offSettings = window.notebookAPI.onShowSettings(() => setView('settings'));
@@ -291,6 +348,13 @@ function Notebook() {
 
   function togglePin(n: NoteSummary) {
     window.notebookAPI.setPinned(n.id, !n.pinned).then(refresh).catch(() => {});
+  }
+
+  // Filter the sidebar to a tag (open the sidebar so the result is visible).
+  function applyTagFilter(tag: string) {
+    setTagFilter(tag);
+    setSidebarOpen(true);
+    localStorage.setItem('nb-sidebar', 'open');
   }
 
   // Commit any pending (toast-window) delete for real — removes the file.
@@ -425,7 +489,7 @@ function Notebook() {
       const byId = new Map(notes.map((n) => [n.id, n]));
       setResults(hits.map((h) => {
         const n = byId.get(h.id);
-        return { id: h.id, title: n?.title ?? h.snippet, snippet: h.snippet, sourceApp: n?.sourceApp, model: n?.model, pinned: n?.pinned ?? false, createdAt: n?.createdAt ?? '' };
+        return { id: h.id, title: n?.title ?? h.snippet, snippet: h.snippet, tags: n?.tags ?? h.tags ?? [], sourceApp: n?.sourceApp, model: n?.model, pinned: n?.pinned ?? false, createdAt: n?.createdAt ?? '' };
       }));
     }, 180);
   }
@@ -508,6 +572,19 @@ function Notebook() {
       <div className="body">
         <div className="title">{n.title || 'Untitled'}</div>
         <div className="meta">{n.createdAt && relTime(n.createdAt) ? `${relTime(n.createdAt)} · ` : ''}{n.snippet}</div>
+        {n.tags.length > 0 && (
+          <div className="row-tags">
+            {n.tags.slice(0, 3).map((t) => (
+              <button
+                key={t}
+                className={`row-tag${tagFilter && t.toLowerCase() === tagFilter.toLowerCase() ? ' active' : ''}`}
+                onClick={(e) => { e.stopPropagation(); applyTagFilter(t); }}
+                title={`Show notes tagged “${t}”`}
+              >{t}</button>
+            ))}
+            {n.tags.length > 3 && <span className="row-tag-more">+{n.tags.length - 3}</span>}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -567,6 +644,10 @@ function Notebook() {
 
   const rootFolders = childFolders(null);
   const rootNotes = notesInFolder(null);
+  // When a tag filter is active the folder tree is bypassed for a flat list of matching notes.
+  const filteredNotes = tagFilter
+    ? notes.filter((n) => n.tags.some((t) => t.toLowerCase() === tagFilter.toLowerCase()))
+    : null;
 
   // Metadata for the header line under the title (only for a saved, selected note).
   const current = selectedId ? notes.find((n) => n.id === selectedId) : null;
@@ -644,7 +725,19 @@ function Notebook() {
           onContextMenu={(e) => { if (!(e.target as HTMLElement).closest('.note-row, .folder-row, button, input')) { e.preventDefault(); setMenuPos({ x: e.clientX, y: e.clientY }); setCreateOpen(true); } }}
           title="Two-finger click empty space to create a note or folder"
         >
-          {notes.length === 0 && folders.length === 0 ? (
+          {tagFilter ? (
+            <>
+              <div className="tag-filter-bar">
+                <span className="tfb-label">Tagged <span className="tag-chip static">{tagFilter}</span></span>
+                <button className="tfb-clear" onClick={() => setTagFilter(null)} title="Show all notes">All notes</button>
+              </div>
+              {filteredNotes && filteredNotes.length ? (
+                filteredNotes.map((n) => renderNoteRow(n, 0))
+              ) : (
+                <div className="folder-empty" style={{ paddingLeft: 9 }}>No notes with this tag.</div>
+              )}
+            </>
+          ) : notes.length === 0 && folders.length === 0 ? (
             <div className="empty-list">No notes yet.<br />Two-finger click here to make a note or folder, or capture text.</div>
           ) : (
             <>
@@ -704,6 +797,16 @@ function Notebook() {
             {current.sourceApp && <><span className="nm-dot">·</span><span>{current.sourceApp}</span></>}
             {current.createdAt && relTime(current.createdAt) && <><span className="nm-dot">·</span><span>{relTime(current.createdAt)}</span></>}
             <span className="nm-dot">·</span><span>{words} {words === 1 ? 'word' : 'words'}</span>
+          </div>
+        )}
+        {current && streaming !== 'streaming' && (
+          <div className="tag-row">
+            <TagEditor
+              tags={current.tags}
+              allTags={allTags}
+              onChange={(t) => saveTags(current.id, t)}
+              onFilter={applyTagFilter}
+            />
           </div>
         )}
         {image && (
