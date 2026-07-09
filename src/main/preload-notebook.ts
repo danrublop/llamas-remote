@@ -3,8 +3,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ModelFit, DetailedModel, CatalogEntry, ModelsList } from './shared/model-types';
 import type { Folder, FolderState } from './services/notebook/folder-store';
+import type { AIBlockMeta } from './services/notebook/sidecar';
 export type { ModelFit, DetailedModel, CatalogEntry, ModelsList };
-export type { Folder, FolderState };
+export type { Folder, FolderState, AIBlockMeta };
+
+/** A note's body plus the metadata needed to reconstruct its AI blocks on load. */
+export interface NoteWithBlocks {
+  body: string;
+  aiBlocks: AIBlockMeta[];
+}
 
 export interface NotebookMeta {
   prompt: string;        // action label (Explain / Debug / …) or freeform question
@@ -33,11 +40,15 @@ const api = {
   list: (): Promise<NoteSummary[]> => ipcRenderer.invoke('notebook:list'),
   search: (query: string): Promise<Array<{ id: string; snippet: string; tags: string[] }>> => ipcRenderer.invoke('notebook:search', query),
   getBody: (id: string): Promise<string | null> => ipcRenderer.invoke('notebook:get', id),
+  /** Body + AI-block metadata, for reconstructing AI blocks when a note loads. */
+  getNote: (id: string): Promise<NoteWithBlocks | null> => ipcRenderer.invoke('notebook:get-note', id),
   /** Data URL of the note's capture image, or null. */
   getImage: (id: string): Promise<string | null> => ipcRenderer.invoke('notebook:image', id),
   rename: (id: string, title: string): Promise<void> => ipcRenderer.invoke('notebook:rename', id, title),
   setPinned: (id: string, pinned: boolean): Promise<void> => ipcRenderer.invoke('notebook:pin', id, pinned),
-  updateBody: (id: string, body: string): Promise<void> => ipcRenderer.invoke('notebook:update-body', id, body),
+  /** Persist a note's body; pass `aiBlocks` to also rewrite its AI-block sidecar (omit to leave it). */
+  updateBody: (id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>): Promise<void> =>
+    ipcRenderer.invoke('notebook:update-body', id, body, aiBlocks),
   hide: (id: string): Promise<void> => ipcRenderer.invoke('notebook:hide', id),
   restore: (id: string): Promise<void> => ipcRenderer.invoke('notebook:restore', id),
   remove: (id: string): Promise<void> => ipcRenderer.invoke('notebook:delete', id),

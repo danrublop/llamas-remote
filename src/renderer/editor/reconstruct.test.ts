@@ -65,6 +65,14 @@ describe('markdownToDoc', () => {
     expect(JSON.stringify(ai?.content)).toContain('the answer');
   });
 
+  it('carries commandId + selection from the sidecar into the block (cross-session re-run)', () => {
+    const m: AIBlockMeta = { blockId: 'R1', model: 'llama3.2', prompt: 'Explain', commandId: 'explain', selection: 'const x = 1', createdAt: '2026-05-26T00:00:00Z' };
+    const doc = markdownToDoc('<!--ai:R1-->\nans\n<!--/ai-->', [m]);
+    const ai = (doc.content ?? []).find((n) => n.type === 'aiBlock');
+    expect(ai?.attrs?.commandId).toBe('explain');
+    expect(ai?.attrs?.selection).toBe('const x = 1');
+  });
+
   it('degrades to plain prose when no markers are present', () => {
     const doc = markdownToDoc('# Heading\n\njust normal notes', []);
     expect((doc.content ?? []).some((n) => n.type === 'aiBlock')).toBe(false);

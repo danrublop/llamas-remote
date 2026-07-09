@@ -4,6 +4,7 @@
 import { Editor } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
 import { notebookExtensions } from './extensions';
+import type { AIBlockMeta } from '../../main/services/notebook/sidecar';
 
 export interface AiBlockHit {
   pos: number;
@@ -84,6 +85,32 @@ export function setAiBlockMarkdown(editor: Editor, blockId: string, markdown: st
     // Schema mismatch / bad JSON — never lose the answer; fall back to literal text.
     return setAiBlockText(editor, blockId, markdown);
   }
+}
+
+/**
+ * Collect the AI blocks currently in the doc as sidecar metadata (blockId + prompt/model +
+ * re-run inputs), in document order. This is the SAVE side of AI-block persistence: the live
+ * doc is authoritative for which blocks exist, so the sidecar is rewritten from exactly these.
+ * Blocks without a real blockId are skipped (they can't be keyed to an anchor). `createdAt` is
+ * left for the store to fill/preserve, so it stays stable across saves.
+ */
+export function collectAiBlocks(editor: Editor): Array<Omit<AIBlockMeta, 'createdAt'>> {
+  const blocks: Array<Omit<AIBlockMeta, 'createdAt'>> = [];
+  editor.state.doc.descendants((node) => {
+    if (node.type.name !== 'aiBlock') return true;
+    const a = node.attrs as { blockId?: string | null; prompt?: string | null; model?: string | null; commandId?: string | null; selection?: string | null };
+    if (typeof a.blockId === 'string' && a.blockId.length) {
+      blocks.push({
+        blockId: a.blockId,
+        prompt: a.prompt ?? '',
+        model: a.model ?? '',
+        commandId: a.commandId ?? undefined,
+        selection: a.selection ?? undefined,
+      });
+    }
+    return false; // aiBlocks don't nest — no need to descend into their content
+  });
+  return blocks;
 }
 
 /** Patch an aiBlock's transient attrs (e.g. state: 'generating' | 'error' | 'done'). */

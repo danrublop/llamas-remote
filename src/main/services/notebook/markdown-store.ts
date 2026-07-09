@@ -19,6 +19,7 @@ import { readdirSync, readFileSync, writeFileSync, renameSync, statSync, existsS
 import { join, extname } from 'path';
 import type { DiskEntry } from './reconcile';
 import type { NotebookEntry, SourceKind } from './types';
+import { readSidecar, writeSidecar, type AIBlockMeta } from './sidecar';
 
 function esc(value: string): string {
   // Quote scalars that could confuse the minimal parser.
@@ -128,10 +129,24 @@ export class MarkdownStore {
     return path;
   }
 
-  /** Delete an entry's file if present. */
+  /** Delete an entry's file (and its AI-block sidecar) if present. */
   delete(id: string): void {
     const path = this.pathFor(id);
     if (existsSync(path)) rmSync(path);
+    // Remove the sidecar too so a deleted note doesn't leave orphaned AI-block metadata behind.
+    writeSidecar(this.dir, id, []);
+  }
+
+  /** AI-block metadata for a note (empty if it has no sidecar). */
+  readAiBlocks(id: string): AIBlockMeta[] {
+    if (!isValidEntryId(id)) throw new Error(`Invalid notebook entry id: ${JSON.stringify(id)}`);
+    return readSidecar(this.dir, id)?.blocks ?? [];
+  }
+
+  /** Persist a note's AI-block metadata (atomic; deletes the sidecar when there are none). */
+  writeAiBlocks(id: string, blocks: AIBlockMeta[]): void {
+    if (!isValidEntryId(id)) throw new Error(`Invalid notebook entry id: ${JSON.stringify(id)}`);
+    writeSidecar(this.dir, id, blocks);
   }
 
   /** Copy a capture image into the notebook's images/ dir, keyed by entry id. Returns the

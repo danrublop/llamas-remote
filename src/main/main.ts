@@ -13,6 +13,7 @@ import { isVisionCapable } from './services/router/model-router';
 import { totalmem } from 'os';
 import { NotchController } from './services/notch/notch-controller';
 import { StreamSession } from './services/notch/stream-session';
+import { InlineGenerationSession } from './services/notch/inline-gen-session';
 import { OllamaLlmClient } from './services/llm/ollama-llm-client';
 import { OpenAiLlmClient } from './services/llm/openai-llm-client';
 import { AnthropicLlmClient } from './services/llm/anthropic-llm-client';
@@ -22,6 +23,7 @@ import { MarkdownStore, isValidEntryId, makeEntry } from './services/notebook/ma
 import { FolderStore } from './services/notebook/folder-store';
 import { migrateHtmlBodies } from './services/notebook/migrate-html-bodies';
 import { NotebookStore } from './services/notebook/notebook-store';
+import { sanitizeIncomingBlocks } from './services/notebook/sidecar';
 import { MemoryNotebookIndex } from './services/notebook/memory-index';
 import type { NotebookIndex } from './services/notebook/types';
 import { BUILT_IN_PRESETS } from './services/presets/presets';
@@ -56,6 +58,10 @@ class MainProcess {
   private ollamaProcessService = new OllamaProcessService();
   private notchController: NotchController | null = null;
   private streamSession: StreamSession | null = null;
+  // Inline `/` generations stream into a specific AI block. Kept SEPARATE from streamSession
+  // (the panel's single streaming pane) so a notebook generation and a panel query — or two
+  // inline generations of different blocks — never abort each other.
+  private inlineGen: InlineGenerationSession | null = null;
   private captureProvider: CaptureProvider | null = null;
   private notebookStore: NotebookStore | null = null;
   private folderStore: FolderStore | null = null;
@@ -154,6 +160,11 @@ class MainProcess {
       // tags each run so a superseding query can't be overwritten by a stale stream, and
       // carries an AbortSignal so a superseded / window-closed run stops generating.
       this.streamSession = new StreamSession({
+        send: (channel, payload) => this.sendNotebook(channel, payload),
+        newId: () => randomUUID(),
+      });
+      // Inline AI-block generations, keyed per blockId (see InlineGenerationSession).
+      this.inlineGen = new InlineGenerationSession({
         send: (channel, payload) => this.sendNotebook(channel, payload),
         newId: () => randomUUID(),
       });
@@ -385,12 +396,18 @@ class MainProcess {
     // A fresh load means the renderer hasn't mounted its listeners yet — buffer events
     // until it signals 'notebook:ready' (handshake), and re-buffer on any reload.
     this.streamSession?.markNotReady();
-    this.notebookWindow.webContents.on('did-start-loading', () => this.streamSession?.markNotReady());
+    this.notebookWindow.webContents.on('did-start-loading', () => {
+      // A reload tears down the renderer's editor (and any AI block mid-generation) — stop
+      // in-flight inline runs so they don't stream into a block that no longer exists.
+      this.inlineGen?.abortAll();
+      this.streamSession?.markNotReady();
+    });
     this.notebookWindow.loadFile(join(__dirname, '..', 'notebook.html')).catch((e) => console.error('Failed to load notebook:', e));
     this.notebookWindow.on('closed', () => {
       this.notebookWindow = null;
       // No window to stream into — stop any in-flight generation and re-buffer.
       this.streamSession?.abortActive();
+      this.inlineGen?.abortAll();
       this.streamSession?.markNotReady();
     });
   }
@@ -577,11 +594,15 @@ class MainProcess {
       selection?: string;        // text the command operates on (may be empty for pure generate)
       userSelectedModel?: string;
     }) => {
-      if (!this.notchController || !this.streamSession) return { ok: false, error: 'Notebook generation not ready' };
-      const session = this.streamSession;
-      const { runId, signal } = session.beginRun();
+      if (!this.notchController || !this.inlineGen) return { ok: false, error: 'Notebook generation not ready' };
+      if (!isValidEntryId(req.blockId)) return { ok: false, error: 'Invalid block id' };
+      const gen = this.inlineGen;
+      const { blockId } = req;
+      // Per-block run: aborts only this block's own prior run (re-run), never the panel query
+      // or another block's generation.
+      const { runId, signal } = gen.begin(blockId);
       const displayModel = req.userSelectedModel || DEFAULT_TEXT_MODEL;
-      session.emit(runId, 'notebook:gen-start', { blockId: req.blockId, model: displayModel });
+      gen.emit(blockId, runId, 'notebook:gen-start', { blockId, model: displayModel });
       try {
         const result = await this.notchController.runQuery({
           kind: 'text',
@@ -591,16 +612,21 @@ class MainProcess {
           capture: { text: req.selection ?? '', via: 'clipboard' },
           persist: false, // the answer lives in a block inside the current note, not a new entry
           signal,
-          onToken: (delta) => session.emit(runId, 'notebook:gen-token', { blockId: req.blockId, delta }),
+          onToken: (delta) => gen.emit(blockId, runId, 'notebook:gen-token', { blockId, delta }),
         });
-        session.emit(runId, 'notebook:gen-done', { blockId: req.blockId, answer: result.answer, model: result.model });
+        gen.emit(blockId, runId, 'notebook:gen-done', { blockId, answer: result.answer, model: result.model });
         return { ok: true, model: result.model, answer: result.answer };
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
-        if (message !== 'cancelled') session.emit(runId, 'notebook:gen-error', { blockId: req.blockId, message });
+        // Suppress the error only when the run was deliberately cancelled (superseded/closed).
+        // Match the same signals the panel path does — an exact 'cancelled', an aborted
+        // signal, or a provider stream-level "...canceled". emit() itself also drops the
+        // event if this run was superseded, so a re-run's fresh block is never marked errored.
+        const wasCancelled = message === 'cancelled' || signal.aborted || /cancell?ed/i.test(message);
+        if (!wasCancelled) gen.emit(blockId, runId, 'notebook:gen-error', { blockId, message });
         return { ok: false, error: message };
       } finally {
-        session.endRun(runId);
+        gen.end(blockId, runId);
       }
     });
 
@@ -643,6 +669,14 @@ class MainProcess {
     ipcMain.handle('notebook:list', () => this.notebookStore?.list() ?? []);
     ipcMain.handle('notebook:search', (_e, query: string) => this.notebookStore?.search(query) ?? []);
     ipcMain.handle('notebook:get', (_e, id: string) => (isValidEntryId(id) ? this.notebookStore?.getBody(id) ?? null : null));
+    // Body + AI-block sidecar in one round trip, so the editor can reconstruct AI blocks on
+    // load (anchors alone don't survive the markdown parse — see reconstruct.ts).
+    ipcMain.handle('notebook:get-note', (_e, id: string) => {
+      if (!isValidEntryId(id) || !this.notebookStore) return null;
+      const body = this.notebookStore.getBody(id);
+      if (body === null) return null;
+      return { body, aiBlocks: this.notebookStore.getAiBlocks(id) };
+    });
     ipcMain.handle('notebook:image', (_e, id: string) => {
       if (!isValidEntryId(id)) return null;
       const p = this.notebookStore?.getImagePath(id);
@@ -657,7 +691,13 @@ class MainProcess {
     });
     ipcMain.handle('notebook:rename', (_e, id: string, title: string) => { if (isValidEntryId(id)) this.notebookStore?.rename(id, title); });
     ipcMain.handle('notebook:pin', (_e, id: string, pinned: boolean) => { if (isValidEntryId(id)) this.notebookStore?.setPinned(id, pinned); });
-    ipcMain.handle('notebook:update-body', (_e, id: string, body: string) => { if (isValidEntryId(id)) this.notebookStore?.updateBody(id, body); });
+    ipcMain.handle('notebook:update-body', (_e, id: string, body: string, aiBlocks?: unknown) => {
+      if (!isValidEntryId(id)) return;
+      // Only touch the sidecar when the renderer actually sent blocks. Undefined = body-only
+      // save (leave the sidecar alone); an array (even empty) = rewrite it (empty deletes it).
+      const blocks = aiBlocks === undefined ? undefined : sanitizeIncomingBlocks(aiBlocks);
+      this.notebookStore?.updateBody(id, body, blocks);
+    });
     ipcMain.handle('notebook:hide', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.hide(id); });
     ipcMain.handle('notebook:restore', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.restore(id); });
     ipcMain.handle('notebook:delete', (_e, id: string) => {

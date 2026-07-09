@@ -9,6 +9,8 @@ import './notebook.css';
 
 interface NotebookMeta { prompt: string; selection: string; sourceApp?: string; model: string }
 interface NoteSummary { id: string; title: string; snippet: string; sourceApp?: string; model?: string; imagePath?: string; pinned: boolean; createdAt: string }
+interface AIBlockMeta { blockId: string; prompt: string; model: string; commandId?: string; selection?: string; createdAt: string }
+interface NoteWithBlocks { body: string; aiBlocks: AIBlockMeta[] }
 interface Folder { id: string; name: string; parentId: string | null }
 interface FolderState { folders: Folder[]; assignments: Record<string, string> }
 interface NotebookAPI {
@@ -16,10 +18,11 @@ interface NotebookAPI {
   list: () => Promise<NoteSummary[]>;
   search: (query: string) => Promise<Array<{ id: string; snippet: string; tags: string[] }>>;
   getBody: (id: string) => Promise<string | null>;
+  getNote: (id: string) => Promise<NoteWithBlocks | null>;
   getImage: (id: string) => Promise<string | null>;
   rename: (id: string, title: string) => Promise<void>;
   setPinned: (id: string, pinned: boolean) => Promise<void>;
-  updateBody: (id: string, body: string) => Promise<void>;
+  updateBody: (id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>) => Promise<void>;
   hide: (id: string) => Promise<void>;
   restore: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -130,9 +133,11 @@ function Notebook() {
   const [words, setWords] = useState(0); // live word count
   const [toast, setToast] = useState<{ msg: string; undo?: () => void } | null>(null);
 
-  // Markdown that seeds the TipTap editor for the selected/new note. editorKey forces a
-  // remount (and re-seed) whenever the note changes — useEditor only reads `content` once.
+  // Markdown + AI-block metadata that seed the TipTap editor for the selected/new note.
+  // editorKey forces a remount (and re-seed) whenever the note changes — useEditor only reads
+  // `content` once.
   const [editorMarkdown, setEditorMarkdown] = useState('');
+  const [editorBlocks, setEditorBlocks] = useState<AIBlockMeta[]>([]);
   const [editorKey, setEditorKey] = useState(0);
   const [editor, setEditor] = useState<Editor | null>(null); // live TipTap instance (for color/code toolbar)
   const [textColor, setTextColor] = useState('#26251e');
@@ -180,10 +185,11 @@ function Notebook() {
     persistExpanded((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
   }, [persistExpanded]);
 
-  // Seed the TipTap editor with a note's markdown body (remount via editorKey).
-  const loadEditor = useCallback((markdown: string) => {
+  // Seed the TipTap editor with a note's markdown body + AI-block metadata (remount via editorKey).
+  const loadEditor = useCallback((markdown: string, blocks: AIBlockMeta[] = []) => {
     liveMarkdown.current = markdown;
     setEditorMarkdown(markdown);
+    setEditorBlocks(blocks);
     setWords(countWords(markdown));
     setEditorKey((k) => k + 1);
   }, []);
@@ -197,12 +203,12 @@ function Notebook() {
     const list = fromList ?? notes;
     setTitle(list.find((n) => n.id === id)?.title ?? '');
     setImage(null);
-    const [body, img] = await Promise.all([
-      window.notebookAPI.getBody(id),
+    const [note, img] = await Promise.all([
+      window.notebookAPI.getNote(id),
       window.notebookAPI.getImage(id),
     ]);
     if (selectedRef.current !== id) return; // selection changed while loading
-    loadEditor(body ?? '');
+    loadEditor(note?.body ?? '', note?.aiBlocks ?? []);
     setImage(img);
   }, [notes, loadEditor]);
 
@@ -340,13 +346,13 @@ function Notebook() {
   // debounce or an unmount flush must never land in the newly-selected note). Only refresh the
   // live copy (copy/export + word count) when the write is for the note still on screen, so a
   // flush for the outgoing note can't clobber the incoming note's stats.
-  const onEditorChange = useCallback((id: string | null, markdown: string) => {
+  const onEditorChange = useCallback((id: string | null, markdown: string, aiBlocks: Array<Omit<AIBlockMeta, 'createdAt'>>) => {
     if (id === selectedRef.current) {
       liveMarkdown.current = markdown;
       setWords(countWords(markdown));
     }
     if (id) {
-      window.notebookAPI.updateBody(id, markdown).then(refresh).catch(() => {});
+      window.notebookAPI.updateBody(id, markdown, aiBlocks).then(refresh).catch(() => {});
     }
   }, [refresh]);
 
@@ -669,6 +675,7 @@ function Notebook() {
               key={editorKey}
               noteId={selectedId}
               markdown={editorMarkdown}
+              aiBlocks={editorBlocks}
               model={current?.model}
               onChange={onEditorChange}
               onEditorReady={setEditor}

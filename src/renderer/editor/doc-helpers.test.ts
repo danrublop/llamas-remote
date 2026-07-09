@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { Editor } from '@tiptap/core';
 import { notebookExtensions } from './extensions';
-import { findAiBlock, setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown } from './doc-helpers';
+import { findAiBlock, setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown, collectAiBlocks } from './doc-helpers';
 
 function editorWithBlock(blockId: string) {
   return new Editor({
@@ -107,6 +107,28 @@ describe('setAiBlockMarkdown (finding #4: final answer parsed into real nodes)',
     const e = editorWithBlock('B1');
     setAiBlockMarkdown(e, 'B1', 'plain answer');
     expect(e.getMarkdown()).toContain('intro');
+    e.destroy();
+  });
+});
+
+describe('collectAiBlocks', () => {
+  it('collects blocks with re-run inputs, in order, skipping id-less blocks', () => {
+    const e = new Editor({
+      extensions: notebookExtensions(),
+      content: {
+        type: 'doc',
+        content: [
+          { type: 'aiBlock', attrs: { blockId: 'b1', model: 'm', prompt: 'Explain', commandId: 'explain', selection: 'code' }, content: [{ type: 'paragraph' }] },
+          { type: 'paragraph', content: [{ type: 'text', text: 'mid' }] },
+          { type: 'aiBlock', attrs: { blockId: null }, content: [{ type: 'paragraph' }] }, // no id -> skipped
+          { type: 'aiBlock', attrs: { blockId: 'b2', model: 'm2' }, content: [{ type: 'paragraph' }] },
+        ],
+      },
+    });
+    const blocks = collectAiBlocks(e);
+    expect(blocks.map((b) => b.blockId)).toEqual(['b1', 'b2']);
+    expect(blocks[0]).toEqual({ blockId: 'b1', prompt: 'Explain', model: 'm', commandId: 'explain', selection: 'code' });
+    expect(blocks[1]).toEqual({ blockId: 'b2', prompt: '', model: 'm2', commandId: undefined, selection: undefined });
     e.destroy();
   });
 });

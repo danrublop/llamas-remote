@@ -155,3 +155,54 @@ describe('NotebookStore', () => {
     expect(summary).toEqual({ inserted: 0, reindexed: 0, tombstoned: 0, revived: 0 });
   });
 });
+
+describe('NotebookStore — AI-block sidecar persistence', () => {
+  const seed = (id: string) => store.save(makeEntry({ id, body: '', tags: [], model: 'm', sourceApp: 'A' }));
+
+  it('persists AI blocks via updateBody and returns them via getAiBlocks', () => {
+    seed('n1');
+    store.updateBody('n1', 'body <!--ai:b1-->ans<!--/ai-->', [
+      { blockId: 'b1', prompt: 'Explain', model: 'llama3.2', commandId: 'explain', selection: 'const x=1' },
+    ]);
+    const blocks = store.getAiBlocks('n1');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ blockId: 'b1', prompt: 'Explain', model: 'llama3.2', commandId: 'explain', selection: 'const x=1' });
+    expect(typeof blocks[0].createdAt).toBe('string');
+  });
+
+  it('preserves createdAt across saves — only new blocks get a fresh timestamp', () => {
+    seed('n1');
+    store.updateBody('n1', 'b', [{ blockId: 'b1', prompt: 'p', model: 'm' }]);
+    const first = store.getAiBlocks('n1')[0].createdAt;
+    store.updateBody('n1', 'b2', [{ blockId: 'b1', prompt: 'p', model: 'm' }]);
+    expect(store.getAiBlocks('n1')[0].createdAt).toBe(first);
+  });
+
+  it('drops orphaned blocks (prose deletion wins) and removes the sidecar when none remain', () => {
+    seed('n1');
+    store.updateBody('n1', 'b', [
+      { blockId: 'b1', prompt: 'p', model: 'm' },
+      { blockId: 'b2', prompt: 'p2', model: 'm' },
+    ]);
+    store.updateBody('n1', 'b', [{ blockId: 'b1', prompt: 'p', model: 'm' }]); // b2 removed from the doc
+    expect(store.getAiBlocks('n1').map((b) => b.blockId)).toEqual(['b1']);
+    store.updateBody('n1', 'b', []); // all removed
+    expect(store.getAiBlocks('n1')).toEqual([]);
+    expect(existsSync(join(dir, 'n1.meta.json'))).toBe(false);
+  });
+
+  it('updateBody without an aiBlocks arg leaves the sidecar untouched (body-only save)', () => {
+    seed('n1');
+    store.updateBody('n1', 'b', [{ blockId: 'b1', prompt: 'p', model: 'm' }]);
+    store.updateBody('n1', 'b-edited'); // no blocks arg
+    expect(store.getAiBlocks('n1').map((b) => b.blockId)).toEqual(['b1']);
+  });
+
+  it('delete() removes the sidecar too (no orphaned metadata)', () => {
+    seed('n1');
+    store.updateBody('n1', 'b', [{ blockId: 'b1', prompt: 'p', model: 'm' }]);
+    expect(existsSync(join(dir, 'n1.meta.json'))).toBe(true);
+    store.delete('n1');
+    expect(existsSync(join(dir, 'n1.meta.json'))).toBe(false);
+  });
+});

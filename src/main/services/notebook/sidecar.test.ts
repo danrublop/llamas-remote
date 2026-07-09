@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { parseAnchorIds, reconcileSidecar, readSidecar, writeSidecar, type AIBlockMeta } from './sidecar';
+import { parseAnchorIds, reconcileSidecar, readSidecar, writeSidecar, sanitizeIncomingBlocks, type AIBlockMeta } from './sidecar';
 
 const meta = (blockId: string): AIBlockMeta => ({ blockId, prompt: `p-${blockId}`, model: 'llama3.2', createdAt: '2026-05-26T00:00:00Z' });
 
@@ -80,5 +80,39 @@ describe('readSidecar / writeSidecar', () => {
   it('drops entries without a string blockId on read', () => {
     writeFileSync(join(dir, 'mix.meta.json'), JSON.stringify({ version: 1, blocks: [{ blockId: 'ok', prompt: 'p', model: 'm', createdAt: 't' }, { prompt: 'no id' }] }), 'utf8');
     expect(readSidecar(dir, 'mix')?.blocks.map((b) => b.blockId)).toEqual(['ok']);
+  });
+});
+
+describe('sanitizeIncomingBlocks (untrusted renderer input)', () => {
+  it('keeps valid blocks and their re-run inputs', () => {
+    expect(sanitizeIncomingBlocks([{ blockId: 'b1', prompt: 'p', model: 'm', commandId: 'c', selection: 's' }]))
+      .toEqual([{ blockId: 'b1', prompt: 'p', model: 'm', commandId: 'c', selection: 's' }]);
+  });
+
+  it('drops entries with a missing or unsafe blockId', () => {
+    const out = sanitizeIncomingBlocks([{ blockId: '../etc' }, { prompt: 'no id' }, { blockId: 'has space' }, { blockId: 'ok', prompt: 'p', model: 'm' }]);
+    expect(out.map((b) => b.blockId)).toEqual(['ok']);
+  });
+
+  it('dedups repeated blockIds (copy/paste of a block), keeping the first', () => {
+    const out = sanitizeIncomingBlocks([{ blockId: 'b', prompt: 'first', model: 'm' }, { blockId: 'b', prompt: 'second', model: 'm' }]);
+    expect(out).toHaveLength(1);
+    expect(out[0].prompt).toBe('first');
+  });
+
+  it('defaults missing strings and ignores non-string optionals', () => {
+    expect(sanitizeIncomingBlocks([{ blockId: 'b', prompt: 5, commandId: {} }]))
+      .toEqual([{ blockId: 'b', prompt: '', model: '', commandId: undefined, selection: undefined }]);
+  });
+
+  it('caps an oversized field so a runaway selection cannot bloat the sidecar', () => {
+    const out = sanitizeIncomingBlocks([{ blockId: 'b', selection: 'x'.repeat(200_000) }]);
+    expect(out[0].selection?.length).toBe(100_000);
+  });
+
+  it('returns [] for non-array input', () => {
+    expect(sanitizeIncomingBlocks(null)).toEqual([]);
+    expect(sanitizeIncomingBlocks('nope')).toEqual([]);
+    expect(sanitizeIncomingBlocks(undefined)).toEqual([]);
   });
 });

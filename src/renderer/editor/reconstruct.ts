@@ -63,6 +63,9 @@ export function markdownToDoc(markdown: string, meta: readonly AIBlockMeta[] = [
             blockId: seg.blockId ?? null,
             model: m?.model ?? null,
             prompt: m?.prompt ?? null,
+            // Re-run inputs from the sidecar so a reloaded block re-runs its original command.
+            commandId: m?.commandId ?? null,
+            selection: m?.selection ?? null,
             state: 'done',
           },
           content: inner.length ? inner : [{ type: 'paragraph' }],

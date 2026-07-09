@@ -11,53 +11,15 @@
 //
 // Markdown is the on-disk format: load via setContent(md, markdown), save via getMarkdown().
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor, EditorContent, ReactNodeViewRenderer, type Editor } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import { Markdown } from '@tiptap/markdown';
-import { TextStyle, Color } from '@tiptap/extension-text-style';
-import { Highlight } from '@tiptap/extension-highlight';
-import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
-import { createLowlight, common } from 'lowlight';
-
-// Syntax highlighting for code blocks — `common` bundles ~37 languages (java, js, python, …).
-const lowlight = createLowlight(common);
-
-// Markdown has no syntax for text color / highlight, so we serialize those marks to inline
-// HTML (`<span style="color">`, `<mark style="background-color">`) — which the marks'
-// parseHTML rebuilds on load, so color + highlight survive the on-disk Markdown round-trip.
-// Only these registered marks are reconstructed from the HTML, so it stays XSS-safe.
-// The serializer passes the mark's attrs directly on `node.attrs`.
-// Only emit a color we can prove is a plain CSS color. The Color mark's parseHTML
-// CSS-normalizes + strips quotes, but Highlight's parseHTML reads `data-color` RAW —
-// so untrusted on-disk Markdown (model/clipboard output) could round-trip an
-// unescaped value into `node.attrs.color`. Allowlisting hex / rgb() / hsl() / a bare
-// name keeps the serialized `<span>`/`<mark>` HTML injection-free even on export.
-const SAFE_COLOR = /^#[0-9a-fA-F]{3,8}$|^rgba?\([\d.,\s%/]+\)$|^hsla?\([\d.,\s%/]+\)$|^[a-zA-Z]{1,32}$/;
-const markColor = (node: unknown): string | undefined => {
-  const c = (node as { attrs?: { color?: string } })?.attrs?.color?.trim();
-  return c && SAFE_COLOR.test(c) ? c : undefined;
-};
-
-const TextStyleMd = TextStyle.extend({
-  renderMarkdown(node: unknown, { renderChildren }: { renderChildren: () => string }) {
-    const color = markColor(node);
-    const inner = renderChildren();
-    return color ? `<span style="color: ${color}">${inner}</span>` : inner;
-  },
-} as never);
-
-const HighlightMd = Highlight.extend({
-  renderMarkdown(node: unknown, { renderChildren }: { renderChildren: () => string }) {
-    const color = markColor(node);
-    const inner = renderChildren();
-    return color ? `<mark style="background-color: ${color}">${inner}</mark>` : `<mark>${inner}</mark>`;
-  },
-} as never);
 import { AiBlock } from './ai-block';
 import { AiBlockView } from './ai-block-view';
-import { setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown } from './doc-helpers';
+import { notebookExtensions } from './extensions';
+import { markdownToDoc } from './reconstruct';
+import { setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown, collectAiBlocks } from './doc-helpers';
 import { mergeCommands, filterCommands, type SlashCommand } from '../../main/services/presets/slash-commands';
+import type { AIBlockMeta } from '../../main/services/notebook/sidecar';
 
 // The inline-generation slice of window.notebookAPI (preload-notebook.ts).
 interface GenerateApi {
@@ -86,12 +48,17 @@ export interface NotebookEditorProps {
   noteId: string | null;
   /** Initial body as Markdown. */
   markdown: string;
+  /** AI-block metadata (from the note's sidecar) used to reconstruct AI blocks on load. */
+  aiBlocks?: AIBlockMeta[];
   /** Model id to use for generation (per-note / picker selection). */
   model?: string;
   /** User-defined slash commands (from settings); merged after the built-ins. */
   userCommands?: SlashCommand[];
-  /** Called (debounced) when the body changes, with the owning note id + current Markdown. */
-  onChange?: (noteId: string | null, markdown: string) => void;
+  /**
+   * Called (debounced/flushed) when the body changes, with the owning note id, current
+   * Markdown, and the AI blocks now in the doc (so the parent can persist the sidecar).
+   */
+  onChange?: (noteId: string | null, markdown: string, aiBlocks: Array<Omit<AIBlockMeta, 'createdAt'>>) => void;
   /** Receives the live editor instance (for parent-rendered toolbar controls). */
   onEditorReady?: (editor: Editor | null) => void;
 }
@@ -109,13 +76,14 @@ interface MenuState {
 
 const CLOSED: MenuState = { open: false, query: '', left: 0, top: 0, index: 0, from: 0 };
 
-export function NotebookEditor({ noteId, markdown, model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
+export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
   const [menu, setMenu] = useState<MenuState>(CLOSED);
   const buffers = useRef<Map<string, string>>(new Map());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Latest un-persisted body; held so we can flush it on unmount (note switch / view change /
-  // notch capture) instead of dropping the last <400ms of edits with the pending timer.
+  // Latest un-persisted body + AI blocks; held so we can flush them on unmount (note switch /
+  // view change / notch capture) instead of dropping the last <400ms of edits with the timer.
   const pendingMarkdown = useRef<string | null>(null);
+  const pendingBlocks = useRef<Array<Omit<AIBlockMeta, 'createdAt'>>>([]);
   // onChange can change identity (parent useCallback deps) — keep a live ref so the once-created
   // onUpdate closure + unmount flush call the latest one.
   const onChangeRef = useRef(onChange);
@@ -128,37 +96,39 @@ export function NotebookEditor({ noteId, markdown, model, userCommands = [], onC
   const commands = mergeCommands(userCommands);
   const results = menu.open ? filterCommands(commands, menu.query, 'text') : [];
 
+  // Reconstruct the initial doc (AI blocks rebuilt from the sidecar) ONCE per mount — this
+  // editor remounts per note, so the mount-time markdown/aiBlocks are the note's. markdownToDoc
+  // spins up a throwaway parser, so it must not run on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const initialContent = useMemo(() => markdownToDoc(markdown, aiBlocks), []);
+
   // Persist immediately, cancelling any pending debounce. Called on every note switch/unmount.
   const flushSave = useCallback(() => {
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     if (pendingMarkdown.current != null) {
-      onChangeRef.current?.(noteIdRef.current, pendingMarkdown.current);
+      onChangeRef.current?.(noteIdRef.current, pendingMarkdown.current, pendingBlocks.current);
       pendingMarkdown.current = null;
     }
   }, []);
 
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({ codeBlock: false }), // replaced by the syntax-highlighting block below
-      Markdown,
-      AiBlockWithView,
-      TextStyleMd,
-      Color,
-      HighlightMd.configure({ multicolor: true }),
-      CodeBlockLowlight.configure({ lowlight }),
-    ],
-    content: markdown,
-    contentType: 'markdown' as never,
+    // One shared schema for the live editor + the headless parse/serialize paths, with the
+    // React NodeView spliced in for the AI block. Reconstruct AI blocks from the sidecar on
+    // load (their anchors don't survive a plain markdown parse — see reconstruct.ts).
+    extensions: notebookExtensions({ aiBlock: AiBlockWithView }),
+    content: initialContent,
     onUpdate: ({ editor }) => {
       if (onChangeRef.current) {
         const md = editor.getMarkdown();
+        const blocks = collectAiBlocks(editor);
         const id = noteIdRef.current;
         pendingMarkdown.current = md;
+        pendingBlocks.current = blocks;
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(() => {
           saveTimer.current = null;
           pendingMarkdown.current = null;
-          onChangeRef.current?.(id, md);
+          onChangeRef.current?.(id, md, blocks);
         }, 400);
       }
       detectSlash();
@@ -255,7 +225,7 @@ export function NotebookEditor({ noteId, markdown, model, userCommands = [], onC
       // A completed AI block is a real edit — persist it now (also clears any pending debounce).
       pendingMarkdown.current = null;
       if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
-      onChangeRef.current?.(noteIdRef.current, editor.getMarkdown());
+      onChangeRef.current?.(noteIdRef.current, editor.getMarkdown(), collectAiBlocks(editor));
     });
     const offErr = api.onGenError(({ blockId }) => {
       setAiBlockAttrs(editor, blockId, { state: 'error' });
