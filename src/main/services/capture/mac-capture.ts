@@ -15,7 +15,7 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { clipboard } from 'electron';
+import { app, clipboard } from 'electron';
 import { makeHybridProvider, type CaptureProvider, type CaptureResult, type Clipboard } from './capture';
 
 const run = promisify(execFile);
@@ -33,9 +33,11 @@ async function triggerCopy(): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[capture] osascript keystroke failed:', msg);
     // 1002/-25211 = not trusted for Accessibility; -1743 = Automation not allowed.
+    // Name the app as it appears in System Settings: the product name when packaged, "Electron" in dev.
+    const appName = app.isPackaged ? app.getName() : 'Electron';
     throw new Error(
-      'Could not read the selection. Grant BOTH Accessibility and Automation to this app in ' +
-        'System Settings → Privacy & Security (in dev that\'s "Electron"), then try again.',
+      `Could not read the selection. Grant BOTH Accessibility and Automation to "${appName}" in ` +
+        'System Settings → Privacy & Security, then try again.',
     );
   }
 }
