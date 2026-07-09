@@ -16,7 +16,9 @@ question, and the answer streams into a searchable notebook that lives on your m
 - **Local + cloud models** — local models via [Ollama](https://ollama.com), plus OpenAI and
   Anthropic when you add an API key. Keys are encrypted at rest with Electron `safeStorage`.
 - **Notebook** — every answer is saved as a Markdown file (the source of truth) and indexed
-  in SQLite FTS5 for full-text search. Edit, pin, rename, delete (with undo), and export.
+  in SQLite FTS5 for full-text search. Organize notes into nestable folders; edit with rich
+  text (colors, highlights, syntax-highlighted code blocks); pin, rename, delete (with undo),
+  and export. Toggle a warm **dark mode** from the top bar.
 
 ## Architecture
 
