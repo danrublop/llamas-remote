@@ -78,14 +78,20 @@ const AiBlockWithView = AiBlock.extend({
 });
 
 export interface NotebookEditorProps {
+  /**
+   * Id of the note this editor holds. Saves are keyed to THIS id (not whatever is currently
+   * selected), so a debounced save that fires after the user switched notes still writes to
+   * the note it came from — never the newly-selected one.
+   */
+  noteId: string | null;
   /** Initial body as Markdown. */
   markdown: string;
   /** Model id to use for generation (per-note / picker selection). */
   model?: string;
   /** User-defined slash commands (from settings); merged after the built-ins. */
   userCommands?: SlashCommand[];
-  /** Called (debounced) when the body changes, with the current Markdown. */
-  onChange?: (markdown: string) => void;
+  /** Called (debounced) when the body changes, with the owning note id + current Markdown. */
+  onChange?: (noteId: string | null, markdown: string) => void;
   /** Receives the live editor instance (for parent-rendered toolbar controls). */
   onEditorReady?: (editor: Editor | null) => void;
 }
@@ -103,12 +109,33 @@ interface MenuState {
 
 const CLOSED: MenuState = { open: false, query: '', left: 0, top: 0, index: 0, from: 0 };
 
-export function NotebookEditor({ markdown, model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
+export function NotebookEditor({ noteId, markdown, model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
   const [menu, setMenu] = useState<MenuState>(CLOSED);
   const buffers = useRef<Map<string, string>>(new Map());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest un-persisted body; held so we can flush it on unmount (note switch / view change /
+  // notch capture) instead of dropping the last <400ms of edits with the pending timer.
+  const pendingMarkdown = useRef<string | null>(null);
+  // onChange can change identity (parent useCallback deps) — keep a live ref so the once-created
+  // onUpdate closure + unmount flush call the latest one.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  // noteId is FROZEN at mount, deliberately not updated on re-render. This editor is a fresh
+  // instance per note (parent remounts it via `key`), and `selectedId` flips to the next note
+  // BEFORE this instance unmounts — so reading a live prop would misroute the outgoing note's
+  // flush into the incoming note. The mount-time id is the note this editor actually holds.
+  const noteIdRef = useRef(noteId);
   const commands = mergeCommands(userCommands);
   const results = menu.open ? filterCommands(commands, menu.query, 'text') : [];
+
+  // Persist immediately, cancelling any pending debounce. Called on every note switch/unmount.
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    if (pendingMarkdown.current != null) {
+      onChangeRef.current?.(noteIdRef.current, pendingMarkdown.current);
+      pendingMarkdown.current = null;
+    }
+  }, []);
 
   const editor = useEditor({
     extensions: [
@@ -123,14 +150,26 @@ export function NotebookEditor({ markdown, model, userCommands = [], onChange, o
     content: markdown,
     contentType: 'markdown' as never,
     onUpdate: ({ editor }) => {
-      if (onChange) {
+      if (onChangeRef.current) {
+        const md = editor.getMarkdown();
+        const id = noteIdRef.current;
+        pendingMarkdown.current = md;
         if (saveTimer.current) clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(() => onChange(editor.getMarkdown()), 400);
+        saveTimer.current = setTimeout(() => {
+          saveTimer.current = null;
+          pendingMarkdown.current = null;
+          onChangeRef.current?.(id, md);
+        }, 400);
       }
       detectSlash();
     },
     onSelectionUpdate: () => detectSlash(),
   });
+
+  // Flush any pending body when this editor unmounts (note switch, view change, capture). The
+  // orphaned timer would otherwise fire post-unmount; flushing here saves those edits, keyed to
+  // this editor's own noteId.
+  useEffect(() => flushSave, [flushSave]);
 
   // Hand the live editor up to the parent so its toolbar can drive color / code-block commands.
   useEffect(() => {
@@ -213,7 +252,10 @@ export function NotebookEditor({ markdown, model, userCommands = [], onChange, o
       setAiBlockMarkdown(editor, blockId, answer || (buffers.current.get(blockId) ?? ''));
       setAiBlockAttrs(editor, blockId, { state: 'done', model: m });
       buffers.current.delete(blockId);
-      if (onChange) onChange(editor.getMarkdown());
+      // A completed AI block is a real edit — persist it now (also clears any pending debounce).
+      pendingMarkdown.current = null;
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+      onChangeRef.current?.(noteIdRef.current, editor.getMarkdown());
     });
     const offErr = api.onGenError(({ blockId }) => {
       setAiBlockAttrs(editor, blockId, { state: 'error' });

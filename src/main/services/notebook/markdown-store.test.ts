@@ -2,8 +2,11 @@
 // source of truth, so serialize→parse must be lossless for the fields and bodies we write.
 // (The SQLite index is rebuilt from these files on launch, so a parse bug = data loss.)
 
-import { describe, it, expect } from 'vitest';
-import { serializeEntry, parseEntry, isValidEntryId } from './markdown-store';
+import { describe, it, expect, afterEach } from 'vitest';
+import { readdirSync, existsSync, rmSync, mkdtempSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { serializeEntry, parseEntry, isValidEntryId, makeEntry, MarkdownStore } from './markdown-store';
 import type { NotebookEntry } from './types';
 
 const base: NotebookEntry = {
@@ -60,6 +63,30 @@ describe('serializeEntry ↔ parseEntry round-trip', () => {
 
   it('handles an empty body', () => {
     expect(roundTrip({ ...base, body: '' })?.body).toBe('');
+  });
+});
+
+describe('MarkdownStore.write (atomic)', () => {
+  let dir: string;
+  afterEach(() => { if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true }); });
+
+  it('persists the entry and leaves no temp file behind', () => {
+    dir = mkdtempSync(join(tmpdir(), 'lr-md-'));
+    const store = new MarkdownStore(dir);
+    const entry = makeEntry({ id: 'note1', body: 'hello', tags: [], model: 'llama3.2', sourceApp: 'Safari' });
+    store.write(entry);
+    // only the final .md exists — the temp+rename left no note1.md.tmp
+    expect(readdirSync(dir)).toEqual(['note1.md']);
+    expect(store.read('note1')?.body).toBe('hello');
+  });
+
+  it('overwrites atomically on a second write', () => {
+    dir = mkdtempSync(join(tmpdir(), 'lr-md-'));
+    const store = new MarkdownStore(dir);
+    store.write(makeEntry({ id: 'note1', body: 'first', tags: [], model: 'm', sourceApp: 'a' }));
+    store.write(makeEntry({ id: 'note1', body: 'second', tags: [], model: 'm', sourceApp: 'a' }));
+    expect(readdirSync(dir)).toEqual(['note1.md']);
+    expect(store.read('note1')?.body).toBe('second');
   });
 });
 

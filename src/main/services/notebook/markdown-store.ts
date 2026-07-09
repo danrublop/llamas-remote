@@ -15,7 +15,7 @@
 //   ---
 //   <markdown body>
 
-import { readdirSync, readFileSync, writeFileSync, statSync, existsSync, mkdirSync, rmSync, copyFileSync } from 'fs';
+import { readdirSync, readFileSync, writeFileSync, renameSync, statSync, existsSync, mkdirSync, rmSync, copyFileSync } from 'fs';
 import { join, extname } from 'path';
 import type { DiskEntry } from './reconcile';
 import type { NotebookEntry, SourceKind } from './types';
@@ -119,7 +119,12 @@ export class MarkdownStore {
   /** Write (or overwrite) an entry's file. Returns the file path. */
   write(entry: NotebookEntry): string {
     const path = this.pathFor(entry.id);
-    writeFileSync(path, serializeEntry(entry), 'utf8');
+    // Atomic write (temp + rename) — this file is the source of truth, so a crash or
+    // disk-full mid-write must never leave a truncated `.md` behind. rename() on the same
+    // filesystem is atomic, matching the migration + sidecar writers.
+    const tmp = `${path}.tmp`;
+    writeFileSync(tmp, serializeEntry(entry), 'utf8');
+    renameSync(tmp, path);
     return path;
   }
 

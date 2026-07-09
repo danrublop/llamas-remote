@@ -3,6 +3,14 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.1] - 2026-07-09
+
+### Fixed
+- **Editing one note can no longer bleed into another.** Switching notes within a fraction of a second of typing used to let the pending save land in the newly-opened note (corrupting it and losing the edit). Each note's edits are now saved to that note, no matter how fast you switch.
+- **Your last keystrokes are no longer dropped** when you switch notes, open Settings, or trigger a screen capture right after typing — the pending edit is flushed instead of discarded.
+- **Note files are now written atomically.** A crash, power loss, or full disk mid-save can no longer leave a half-written, unreadable note behind.
+- **Your folder layout is protected too.** The folder file is written atomically, and if it ever becomes unreadable it's backed up (not silently thrown away), so a bad write can't erase all your folders and note-to-folder assignments without a trace.
+
 ## [1.4.0] - 2026-07-09
 
 ### Added

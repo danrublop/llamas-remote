@@ -4,7 +4,7 @@
 // move-folder cycle guard, id validation, and load-time sanitization of a corrupt manifest.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync, existsSync, rmSync, mkdtempSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdtempSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { FolderStore, isValidFolderId } from './folder-store';
@@ -207,6 +207,27 @@ describe('load / persistence', () => {
     writeFileSync(file, 'not json at all', 'utf8');
     const s = new FolderStore(file, nextId);
     expect(s.getState()).toEqual({ folders: [], assignments: {} });
+  });
+
+  it('backs up an unparseable manifest instead of silently discarding it', () => {
+    // folders.json is the ONLY copy of the folder tree + assignments — never lose it silently.
+    writeFileSync(file, '{ this is corrupt', 'utf8');
+    const s = new FolderStore(file, nextId);
+    expect(s.getState()).toEqual({ folders: [], assignments: {} });
+    // the corrupt content is preserved under a backup, and the original name is freed for a fresh save
+    const backups = readdirSync(dir).filter((f) => f.startsWith('folders.json.corrupt-'));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(dir, backups[0]), 'utf8')).toBe('{ this is corrupt');
+    expect(existsSync(file)).toBe(false);
+    // a subsequent write lands cleanly on the freed path
+    s.createFolder('Fresh', null);
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it('writes the manifest atomically (no leftover temp file)', () => {
+    const s = make();
+    s.createFolder('Work', null);
+    expect(readdirSync(dir)).toEqual(['folders.json']); // no folders.json.tmp remains
   });
 
   it('reparents a folder with an orphaned parentId to root', () => {

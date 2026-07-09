@@ -11,7 +11,7 @@
 //     "assignments": { "<noteId>": "<folderId>", … }   // notes absent here live at the root
 //   }
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 
 export interface Folder {
   id: string;
@@ -62,7 +62,17 @@ export class FolderStore {
       }
       this.assignments = asg;
     } catch (e) {
-      console.warn('folders.json unreadable; starting empty.', e);
+      // This file is the ONLY copy of the folder tree + note→folder map (unlike notes, it
+      // has no per-file backup). Never silently discard it: move the corrupt file aside so
+      // the organization is recoverable by hand, and so the next save() writes fresh rather
+      // than re-reading garbage. Mirrors settings-service's corrupt-file handling.
+      try {
+        const backup = `${this.path}.corrupt-${Date.now()}`;
+        renameSync(this.path, backup);
+        console.error(`folders.json was unreadable; backed up to ${backup}. Folder organization was reset.`, e);
+      } catch (renameErr) {
+        console.warn('folders.json unreadable and could not be backed up; starting empty.', e, renameErr);
+      }
       this.folders = [];
       this.assignments = {};
     }
@@ -93,7 +103,11 @@ export class FolderStore {
   private save(): void {
     const state: FolderState = { folders: this.folders, assignments: this.assignments };
     try {
-      writeFileSync(this.path, JSON.stringify(state, null, 2), 'utf8');
+      // Atomic write (temp + rename) — a crash mid-write must not corrupt folders.json and
+      // lose every folder + assignment on the next launch.
+      const tmp = `${this.path}.tmp`;
+      writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
+      renameSync(tmp, this.path);
     } catch (e) {
       console.warn('failed to write folders.json:', e);
     }
