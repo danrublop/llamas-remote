@@ -1,6 +1,6 @@
 {
   "name": "llamas-remote",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Llamas Remote — query selected text and screenshots with local LLMs from the macOS notch; a private chat + notebook.",
   "main": "dist/main/main.js",
   "scripts": {

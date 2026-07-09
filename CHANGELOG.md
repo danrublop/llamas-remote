@@ -3,6 +3,14 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.2] - 2026-07-09
+
+### Fixed
+- **AI blocks now survive reopening a note.** A `/`-command answer used to collapse into plain text the moment you switched notes or relaunched — losing its model label and the re-run button. Blocks are now stored alongside the note and rebuilt when it loads, so they stay AI blocks.
+- **Re-run works after a reload.** The command and the text a block ran on are saved with it, so re-running a block from an earlier session repeats the original request instead of a blank one.
+- **Running two things at once no longer cancels one of them.** A `/` command in a note and a notch capture (or a second `/` command in another block) used to abort each other and leave a block stuck spinning forever. Each generation is now independent, and a block always finishes or shows an error.
+- Text color, highlight, and code blocks are preserved when a note with AI blocks is reopened (they could previously be dropped on reload). Links in notes no longer open on a single click in the editor.
+
 ## [1.4.1] - 2026-07-09
 
 ### Fixed
