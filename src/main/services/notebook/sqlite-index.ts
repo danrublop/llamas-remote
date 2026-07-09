@@ -96,10 +96,13 @@ export class SqliteNotebookIndex implements NotebookIndex {
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
+          // On conflict, tombstone state is preserved (NOT cleared): an in-app edit that lands
+          // after a soft-delete (e.g. the editor's flush-on-unmount racing a delete) must not
+          // resurrect the note. Reconcile's revive untombstones explicitly instead.
           `INSERT INTO entries (id, title, body, tags, model, source_app, source_kind, created_at, image_path, pinned, indexed_mtime_ms, tombstoned, tombstoned_at_ms)
            VALUES (@id, @title, @body, @tags, @model, @source_app, @source_kind, @created_at, @image_path, COALESCE(@pinned, 0), @mtime, 0, 0)
            ON CONFLICT(id) DO UPDATE SET
-             body=@body, tags=@tags, indexed_mtime_ms=@mtime, tombstoned=0, tombstoned_at_ms=0,
+             body=@body, tags=@tags, indexed_mtime_ms=@mtime,
              title=COALESCE(@title, entries.title),
              pinned=COALESCE(@pinned, entries.pinned),
              model=COALESCE(@model, entries.model),

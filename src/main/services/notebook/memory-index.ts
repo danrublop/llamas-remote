@@ -49,8 +49,10 @@ export class MemoryNotebookIndex implements NotebookIndex {
       imagePath: row.imagePath ?? prev?.imagePath,
       pinned: row.pinned ?? prev?.pinned ?? false,
       mtimeMs: row.indexedMtimeMs,
-      tombstoned: false,
-      tombstonedAtMs: undefined,
+      // Preserve tombstone state on update so a late in-app edit can't resurrect a soft-deleted
+      // note (revive untombstones explicitly). New rows default to live.
+      tombstoned: prev?.tombstoned ?? false,
+      tombstonedAtMs: prev?.tombstonedAtMs,
     });
   }
 

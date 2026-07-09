@@ -182,7 +182,12 @@ export class NotebookStore {
           });
           if (action.kind === 'insert') summary.inserted++;
           else if (action.kind === 'reindex') summary.reindexed++;
-          else summary.revived++;
+          else {
+            // upsert no longer clears the tombstone, so a genuine re-creation on disk must be
+            // un-hidden explicitly (in-app edits deliberately don't, so a delete sticks).
+            this.index.untombstone(action.id);
+            summary.revived++;
+          }
           break;
         }
         case 'tombstone': {
