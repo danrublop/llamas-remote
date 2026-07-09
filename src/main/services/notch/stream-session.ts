@@ -41,6 +41,11 @@ export class StreamSession {
   private ready = false;
   private queue: QueuedEvent[] = [];
   private currentRunId: string | null = null;
+  // True once the current run has finished. We keep `currentRunId` set (so a completed run's
+  // already-queued trailing done/saved still flush when the renderer mounts late), but block
+  // any NEW emit for the finished run — defends against a stray late token from a not-yet-GC'd
+  // provider stream landing in the editor after the run is over.
+  private currentRunEnded = false;
   private readonly controllers = new Map<string, AbortController>();
 
   constructor(private readonly deps: StreamSessionDeps) {}
@@ -69,6 +74,7 @@ export class StreamSession {
     const controller = new AbortController();
     this.controllers.set(runId, controller);
     this.currentRunId = runId;
+    this.currentRunEnded = false;
     return { runId, signal: controller.signal };
   }
 
@@ -78,14 +84,17 @@ export class StreamSession {
    */
   emit(runId: string, channel: string, payload?: unknown): void {
     if (runId !== this.currentRunId) return; // superseded or aborted — drop
+    if (this.currentRunEnded) return; // run already finished — drop stray late callbacks
     if (this.ready) this.deps.send(channel, payload);
     else this.queue.push({ runId, channel, payload });
   }
 
-  /** Finish a run (success or error). Releases its controller; leaves currentRunId so
-   *  trailing done/saved events still pass until a newer run begins. */
+  /** Finish a run (success or error). Releases its controller and marks the run ended so no
+   *  new event can be emitted for it; leaves currentRunId set so trailing done/saved that
+   *  were already emitted (and possibly queued) still flush until a newer run begins. */
   endRun(runId: string): void {
     this.controllers.delete(runId);
+    if (runId === this.currentRunId) this.currentRunEnded = true;
   }
 
   /** Abort the active run (a newer run is starting, or the notebook window closed). */

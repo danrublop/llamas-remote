@@ -18,6 +18,7 @@ interface Row {
   pinned: boolean;
   mtimeMs: number;
   tombstoned: boolean;
+  tombstonedAtMs?: number;
 }
 
 function stripHtml(s: string): string {
@@ -33,7 +34,7 @@ export class MemoryNotebookIndex implements NotebookIndex {
   private rows = new Map<string, Row>();
 
   allRows(): IndexRow[] {
-    return [...this.rows.entries()].map(([id, r]) => ({ id, tags: r.tags, indexedMtimeMs: r.mtimeMs, tombstoned: r.tombstoned }));
+    return [...this.rows.entries()].map(([id, r]) => ({ id, tags: r.tags, indexedMtimeMs: r.mtimeMs, tombstoned: r.tombstoned, tombstonedAtMs: r.tombstonedAtMs }));
   }
 
   upsert(row: IndexUpsert): void {
@@ -49,17 +50,18 @@ export class MemoryNotebookIndex implements NotebookIndex {
       pinned: row.pinned ?? prev?.pinned ?? false,
       mtimeMs: row.indexedMtimeMs,
       tombstoned: false,
+      tombstonedAtMs: undefined,
     });
   }
 
   tombstone(id: string): void {
     const r = this.rows.get(id);
-    if (r) r.tombstoned = true;
+    if (r) { r.tombstoned = true; r.tombstonedAtMs = Date.now(); }
   }
 
   untombstone(id: string): void {
     const r = this.rows.get(id);
-    if (r) r.tombstoned = false;
+    if (r) { r.tombstoned = false; r.tombstonedAtMs = undefined; }
   }
 
   search(query: string): SearchHit[] {
@@ -75,17 +77,34 @@ export class MemoryNotebookIndex implements NotebookIndex {
     return [...this.rows.entries()]
       .filter(([, r]) => !r.tombstoned)
       .sort((a, b) => (Number(b[1].pinned) - Number(a[1].pinned)) || (b[1].createdAt ?? '').localeCompare(a[1].createdAt ?? ''))
-      .slice(0, 500)
       .map(([id, r]) => ({
         id,
         title: deriveTitle(r.title, r.body),
         snippet: stripHtml(r.body).slice(0, 80),
+        tags: r.tags,
         sourceApp: r.sourceApp,
         model: r.model,
         imagePath: r.imagePath,
         pinned: r.pinned,
         createdAt: r.createdAt ?? '',
       }));
+  }
+
+  getAllTags(): string[] {
+    const seen = new Map<string, string>();
+    for (const [, r] of this.rows) {
+      if (r.tombstoned) continue;
+      for (const tag of r.tags) {
+        const key = tag.trim().toLowerCase();
+        if (key && !seen.has(key)) seen.set(key, tag.trim());
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  }
+
+  setTags(id: string, tags: string[]): void {
+    const r = this.rows.get(id);
+    if (r) r.tags = tags;
   }
 
   getBody(id: string): string | null {

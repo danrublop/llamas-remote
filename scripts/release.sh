@@ -1,7 +1,12 @@
 #!/bin/bash
 
-# Automated release script for "i cant code"
+# Automated release script for Llamas Remote.
 # Usage: ./scripts/release.sh [patch|minor|major]
+#
+# Bumps the version, commits, tags v<version>, and pushes — which triggers
+# .github/workflows/release.yml to build + publish the signed/notarized DMG+ZIP (and the
+# electron-updater feed) to a GitHub Release. Signing/notarization only happen if the Apple
+# secrets are configured (see RELEASING.md); otherwise the build is unsigned.
 
 set -e
 
@@ -100,22 +105,17 @@ echo ""
 echo -e "${GREEN}🎉 Release v${NEW_VERSION} has been triggered!${NC}"
 echo ""
 echo -e "${BLUE}📋 What happens next:${NC}"
-echo "1. GitHub Actions will build your app (~3-5 minutes)"
-echo "2. A release will be created with the DMG file"
-echo "3. Check progress: https://github.com/danrublop/I-can-t-code-translator/actions"
-echo "4. Release will appear: https://github.com/danrublop/I-can-t-code-translator/releases"
-echo ""
-echo -e "${YELLOW}📝 Don't forget to:${NC}"
-echo "1. Update Homebrew formula SHA256 (after build completes)"
-echo "2. Test the Homebrew installation"
-echo "3. Announce the release to users"
+echo "1. GitHub Actions will build your app (~5-10 minutes)"
+echo "2. A GitHub Release is created with the DMG + ZIP and the auto-update feed"
+echo "3. Check progress: https://github.com/danrublop/llamas-remote/actions"
+echo "4. Release will appear: https://github.com/danrublop/llamas-remote/releases"
 echo ""
 
 # Offer to open GitHub Actions
 read -p "Open GitHub Actions in browser? (y/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    open "https://github.com/danrublop/I-can-t-code-translator/actions"
+    open "https://github.com/danrublop/llamas-remote/actions"
 fi
 
 echo -e "${GREEN}✅ Release process complete!${NC}"

@@ -109,6 +109,36 @@ describe('NotchController.runQuery', () => {
     expect(saved).toHaveLength(0);
   });
 
+  it('throws Nothing-to-ask for a preset on an empty selection and never calls the llm', async () => {
+    const { controller, saved, llm } = setup();
+    // `/explain` at the top of an empty note: the preset renders its literal instruction
+    // text, so the assembled prompt is non-empty — the guard must key off the user input.
+    await expect(
+      controller.runQuery({ kind: 'text', presetId: 'explain', capture: { text: '   ', via: 'clipboard' } }),
+    ).rejects.toThrow(/Nothing to ask/);
+    expect(llm.generate).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+  });
+
+  it('falls back to the selection when freeText is an empty string', async () => {
+    const { controller, llm } = setup();
+    await controller.runQuery({
+      kind: 'text',
+      freeText: '',
+      capture: { text: 'const x = 1', sourceApp: 'A', via: 'clipboard' },
+    });
+    const prompt = (llm.generate as any).mock.calls[0][0].prompt as string;
+    expect(prompt).toBe('const x = 1'); // selection not discarded by empty freeText
+  });
+
+  it('accepts a bare image (no preset, no question) and passes it to the llm', async () => {
+    const { controller, llm, saved } = setup();
+    const res = await controller.runQuery({ kind: 'image', imagePath: '/tmp/shot.png' });
+    expect(res.model).toBe('llava');
+    expect((llm.generate as any).mock.calls[0][0].imagePath).toBe('/tmp/shot.png');
+    expect(saved).toHaveLength(1);
+  });
+
   it('rejects an unknown preset', async () => {
     const { controller } = setup();
     await expect(controller.runQuery({ kind: 'text', presetId: 'nope', capture: { text: 'x', via: 'clipboard' } })).rejects.toThrow(/Unknown preset/);

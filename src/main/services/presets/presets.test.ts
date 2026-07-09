@@ -25,6 +25,13 @@ describe('renderPrompt', () => {
   it('leaves unknown tokens untouched so typos are visible', () => {
     expect(renderPrompt('hi {seletcion}', { selection: 'x' })).toBe('hi {seletcion}');
   });
+
+  it('preserves trailing-double-space hard line-breaks inside the selection', () => {
+    const selection = 'line one  \nline two  \nline three';
+    expect(renderPrompt('Explain:\n\n{selection}', { selection })).toBe(
+      `Explain:\n\n${selection}`,
+    );
+  });
 });
 
 describe('canHandle', () => {

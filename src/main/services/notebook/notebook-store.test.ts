@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, statSync, utimesSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, statSync, utimesSync, existsSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MarkdownStore, makeEntry, serializeEntry } from './markdown-store';
@@ -39,12 +39,21 @@ class FakeIndex implements NotebookIndex {
       .map(([id, r]) => ({ id, snippet: r.body.slice(0, 40), tags: r.tags }));
   }
   list(): NoteSummary[] {
-    return [...this.rows.entries()].filter(([, r]) => !r.tombstoned).map(([id, r]) => ({ id, title: r.title ?? r.body.slice(0, 40), snippet: r.body.slice(0, 80), pinned: r.pinned, createdAt: '' }));
+    return [...this.rows.entries()].filter(([, r]) => !r.tombstoned).map(([id, r]) => ({ id, title: r.title ?? r.body.slice(0, 40), snippet: r.body.slice(0, 80), tags: r.tags, pinned: r.pinned, createdAt: '' }));
+  }
+  getAllTags(): string[] {
+    const seen = new Map<string, string>();
+    for (const [, r] of this.rows) {
+      if (r.tombstoned) continue;
+      for (const t of r.tags) { const k = t.trim().toLowerCase(); if (k && !seen.has(k)) seen.set(k, t.trim()); }
+    }
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
   }
   getBody(id: string): string | null { const r = this.rows.get(id); return r && !r.tombstoned ? r.body : null; }
   getImagePath(): string | null { return null; }
   setTitle(id: string, title: string): void { const r = this.rows.get(id); if (r) r.title = title; }
   setPinned(id: string, pinned: boolean): void { const r = this.rows.get(id); if (r) r.pinned = pinned; }
+  setTags(id: string, tags: string[]): void { const r = this.rows.get(id); if (r) r.tags = tags; }
   updateBody(id: string, body: string): void { const r = this.rows.get(id); if (r) r.body = body; }
 }
 
@@ -153,5 +162,133 @@ describe('NotebookStore', () => {
     store.save(makeEntry({ id: 'e6', body: 'stable', tags: [], model: 'm', sourceApp: 'A' }));
     const summary = store.syncFromDisk();
     expect(summary).toEqual({ inserted: 0, reindexed: 0, tombstoned: 0, revived: 0 });
+  });
+
+  // Pins are serialized to frontmatter; deleting/rebuilding the index from disk must recover them.
+  it('preserves pinned across an index rebuild (pin survives DB delete)', () => {
+    store.save(makeEntry({ id: 'p1', body: 'pinned note', tags: [], model: 'm', sourceApp: 'A', pinned: true }));
+
+    // Simulate the DB being deleted and rebuilt from the markdown files on disk.
+    const rebuilt = new NotebookStore(files, new FakeIndex());
+    rebuilt.syncFromDisk();
+    expect(rebuilt.list().find((n) => n.id === 'p1')?.pinned).toBe(true);
+  });
+
+  // A present-but-unparseable file must stay visible — its content is still on disk.
+  it('does not tombstone a live note whose file became unparseable', () => {
+    store.save(makeEntry({ id: 'u1', body: 'still here', tags: [], model: 'm', sourceApp: 'A' }));
+    writeFileSync(join(dir, 'u1.md'), 'garbage without frontmatter', 'utf8'); // corrupt but present
+
+    const summary = store.syncFromDisk();
+    expect(summary.tombstoned).toBe(0);
+    expect(store.list().map((n) => n.id)).toContain('u1');
+  });
+
+  // One unreadable file (here: a directory named like an entry -> readFileSync EISDIR) must not
+  // abort the whole reconcile and hide every other note.
+  it('isolates an unreadable file — one bad entry does not abort the reconcile', () => {
+    store.save(makeEntry({ id: 'good', body: 'survivor', tags: [], model: 'm', sourceApp: 'A' }));
+    mkdirSync(join(dir, 'bad.md'));
+
+    expect(() => store.syncFromDisk()).not.toThrow();
+    expect(store.search('survivor').map((h) => h.id)).toEqual(['good']);
+  });
+
+  // FTS5 MATCH throws on stray operators/quotes; search must degrade to [] for both callers.
+  it('search returns [] when the index throws (bad FTS query) instead of surfacing it', () => {
+    const throwing = new FakeIndex();
+    throwing.search = () => { throw new Error('fts5: syntax error near ""'); };
+    const s = new NotebookStore(files, throwing);
+    expect(s.search('"')).toEqual([]);
+  });
+});
+
+describe('NotebookStore — tags', () => {
+  it('setTags persists to frontmatter (source of truth) and updates the index list', () => {
+    store.save(makeEntry({ id: 't1', body: 'b', tags: ['old'], model: 'm', sourceApp: 'A' }));
+    store.setTags('t1', ['alpha', 'beta']);
+    expect(files.read('t1')?.tags).toEqual(['alpha', 'beta']); // written to the .md
+    expect(store.list().find((n) => n.id === 't1')?.tags).toEqual(['alpha', 'beta']); // index in sync
+  });
+
+  // Regression for the esc fix: a tag containing a comma or bracket must round-trip intact
+  // (the old bare comma-joined flow list corrupted these on parse).
+  it('setTags round-trips a tag containing a comma / bracket through disk', () => {
+    store.save(makeEntry({ id: 't2', body: 'b', tags: [], model: 'm', sourceApp: 'A' }));
+    store.setTags('t2', ['a,b', 'c]d', 'e[f']);
+    expect(files.read('t2')?.tags).toEqual(['a,b', 'c]d', 'e[f']);
+
+    // And they survive a full index rebuild from the markdown files.
+    const rebuilt = new NotebookStore(files, new FakeIndex());
+    rebuilt.syncFromDisk();
+    expect(rebuilt.list().find((n) => n.id === 't2')?.tags).toEqual(['a,b', 'c]d', 'e[f']);
+  });
+
+  it('getAllTags returns distinct live tags (deduped case-insensitively, first casing wins)', () => {
+    store.save(makeEntry({ id: 'g1', body: 'b', tags: ['Code', 'Safari'], model: 'm', sourceApp: 'A' }));
+    store.save(makeEntry({ id: 'g2', body: 'b', tags: ['code', 'React'], model: 'm', sourceApp: 'A' }));
+    expect(store.getAllTags()).toEqual(['Code', 'React', 'Safari']);
+  });
+
+  it('getAllTags excludes tags that only live on tombstoned notes', () => {
+    store.save(makeEntry({ id: 'g3', body: 'b', tags: ['only-here'], model: 'm', sourceApp: 'A' }));
+    store.hide('g3');
+    expect(store.getAllTags()).not.toContain('only-here');
+  });
+
+  it('list() includes each note’s tags', () => {
+    store.save(makeEntry({ id: 'l1', body: 'b', tags: ['x', 'y'], model: 'm', sourceApp: 'A' }));
+    expect(store.list().find((n) => n.id === 'l1')?.tags).toEqual(['x', 'y']);
+  });
+});
+
+describe('NotebookStore — AI-block sidecar persistence', () => {
+  const seed = (id: string) => store.save(makeEntry({ id, body: '', tags: [], model: 'm', sourceApp: 'A' }));
+
+  it('persists AI blocks via updateBody and returns them via getAiBlocks', () => {
+    seed('n1');
+    store.updateBody('n1', 'body <!--ai:b1-->ans<!--/ai-->', [
+      { blockId: 'b1', prompt: 'Explain', model: 'llama3.2', commandId: 'explain', selection: 'const x=1' },
+    ]);
+    const blocks = store.getAiBlocks('n1');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ blockId: 'b1', prompt: 'Explain', model: 'llama3.2', commandId: 'explain', selection: 'const x=1' });
+    expect(typeof blocks[0].createdAt).toBe('string');
+  });
+
+  it('preserves createdAt across saves — only new blocks get a fresh timestamp', () => {
+    seed('n1');
+    store.updateBody('n1', 'b', [{ blockId: 'b1', prompt: 'p', model: 'm' }]);
+    const first = store.getAiBlocks('n1')[0].createdAt;
+    store.updateBody('n1', 'b2', [{ blockId: 'b1', prompt: 'p', model: 'm' }]);
+    expect(store.getAiBlocks('n1')[0].createdAt).toBe(first);
+  });
+
+  it('drops orphaned blocks (prose deletion wins) and removes the sidecar when none remain', () => {
+    seed('n1');
+    store.updateBody('n1', 'b', [
+      { blockId: 'b1', prompt: 'p', model: 'm' },
+      { blockId: 'b2', prompt: 'p2', model: 'm' },
+    ]);
+    store.updateBody('n1', 'b', [{ blockId: 'b1', prompt: 'p', model: 'm' }]); // b2 removed from the doc
+    expect(store.getAiBlocks('n1').map((b) => b.blockId)).toEqual(['b1']);
+    store.updateBody('n1', 'b', []); // all removed
+    expect(store.getAiBlocks('n1')).toEqual([]);
+    expect(existsSync(join(dir, 'n1.meta.json'))).toBe(false);
+  });
+
+  it('updateBody without an aiBlocks arg leaves the sidecar untouched (body-only save)', () => {
+    seed('n1');
+    store.updateBody('n1', 'b', [{ blockId: 'b1', prompt: 'p', model: 'm' }]);
+    store.updateBody('n1', 'b-edited'); // no blocks arg
+    expect(store.getAiBlocks('n1').map((b) => b.blockId)).toEqual(['b1']);
+  });
+
+  it('delete() removes the sidecar too (no orphaned metadata)', () => {
+    seed('n1');
+    store.updateBody('n1', 'b', [{ blockId: 'b1', prompt: 'p', model: 'm' }]);
+    expect(existsSync(join(dir, 'n1.meta.json'))).toBe(true);
+    store.delete('n1');
+    expect(existsSync(join(dir, 'n1.meta.json'))).toBe(false);
   });
 });

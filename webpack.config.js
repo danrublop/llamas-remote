@@ -37,18 +37,24 @@ module.exports = {
     ]
   },
   plugins: [
+    // dev needs 'unsafe-eval' for the eval-cheap-module-source-map devtool below.
     new HtmlWebpackPlugin({
       template: './src/renderer/panel.html',
       filename: 'panel.html',
-      chunks: ['panel']
+      chunks: ['panel'],
+      templateParameters: { cspScriptSrc: "'self' 'unsafe-eval'" }
     }),
     new HtmlWebpackPlugin({
       template: './src/renderer/notebook.html',
       filename: 'notebook.html',
-      chunks: ['notebook']
+      chunks: ['notebook'],
+      templateParameters: { cspScriptSrc: "'self' 'unsafe-eval'" }
     }),
   ],
-  devtool: 'source-map',
+  // Dev-only config (prod packaging uses webpack.prod.config.js). Full 'source-map' emits
+  // multi-MB external maps and made dev builds take minutes; eval-cheap keeps rebuilds ~3s.
+  // Needs 'unsafe-eval' in the dev CSP (already allowed in panel.html/notebook.html).
+  devtool: 'eval-cheap-module-source-map',
   // Enable hot reloading
   devServer: {
     hot: true,
@@ -60,8 +66,9 @@ module.exports = {
     compress: true,
     port: 3000,
   },
-  // Enable watching for file changes
-  watch: true,
+  // NOTE: no top-level `watch: true` here — it made every one-shot `webpack` / `npm run build`
+  // hang forever (compile, then sit watching, never exit). The `watch:renderer` script passes
+  // `--watch` explicitly when a watcher is actually wanted.
   watchOptions: {
     ignored: /node_modules/,
     aggregateTimeout: 300,

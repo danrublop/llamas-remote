@@ -6,6 +6,7 @@ import { readFileSync } from 'fs';
 import { extname } from 'path';
 import type { LlmClient } from '../notch/notch-controller';
 import { readStreamErrorMessage } from './stream-error';
+import { withRetry } from './retry';
 
 /** OpenAI message content: plain text, or a text+image multimodal array when an image is attached. */
 function buildContent(prompt: string, imagePath?: string): unknown {
@@ -26,15 +27,32 @@ export class OpenAiLlmClient implements LlmClient {
     const key = this.getKey();
     if (!key) throw new Error('No OpenAI API key — add one in Settings.');
     try {
-      const res = await axios.post(
-        'https://api.openai.com/v1/chat/completions',
-        { model: opts.model, messages: [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }], stream: true },
-        { headers: { Authorization: `Bearer ${key}` }, responseType: 'stream', timeout: 120000, signal: opts.signal },
+      // Retry only the request-establishment call — never the stream read below (see retry.ts).
+      const res = await withRetry(
+        () => axios.post(
+          'https://api.openai.com/v1/chat/completions',
+          { model: opts.model, messages: [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }], stream: true },
+          { headers: { Authorization: `Bearer ${key}` }, responseType: 'stream', timeout: 120000, signal: opts.signal },
+        ),
+        { signal: opts.signal },
       );
+      const stream = res.data;
       return await new Promise<string>((resolve, reject) => {
         let full = '';
         let buffer = '';
-        res.data.on('data', (chunk: Buffer) => {
+        let settled = false;
+        // Destroy the socket + detach listeners on the terminal event so a trailing SSE chunk
+        // after [DONE] can't keep calling onToken once we've resolved.
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          stream.removeListener('data', onData);
+          stream.removeListener('end', onEnd);
+          stream.removeListener('error', onError);
+          stream.destroy();
+          fn();
+        };
+        const onData = (chunk: Buffer) => {
           buffer += chunk.toString();
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
@@ -42,15 +60,41 @@ export class OpenAiLlmClient implements LlmClient {
             const t = line.trim();
             if (!t.startsWith('data:')) continue;
             const payload = t.slice(5).trim();
-            if (payload === '[DONE]') { resolve(full); return; }
+            if (payload === '[DONE]') { finish(() => resolve(full)); return; }
             try {
-              const delta = JSON.parse(payload)?.choices?.[0]?.delta?.content;
+              const parsed = JSON.parse(payload);
+              // OpenAI can stream an error as an SSE data line over a 200 response; the old
+              // parser only pulled delta.content and dropped this. Surface it like the
+              // Anthropic client's in-band error branch instead of ending as "complete".
+              if (parsed?.error) {
+                finish(() => reject(new Error(`OpenAI stream error: ${parsed.error?.message || 'unknown error'}`)));
+                return;
+              }
+              const choice = parsed?.choices?.[0];
+              const delta = choice?.delta?.content;
               if (typeof delta === 'string') { full += delta; opts.onToken?.(delta); } // delta, not cumulative
+              // finish_reason "length" means the answer was cut off at the token cap. Without
+              // this the truncated response resolved as if complete — mark it with the same
+              // visible marker the Anthropic client uses for max_tokens stops.
+              if (choice?.finish_reason === 'length') {
+                const marker = '\n\n_(truncated — response hit the length limit)_';
+                full += marker;
+                opts.onToken?.(marker);
+                finish(() => resolve(full));
+                return;
+              }
             } catch { /* skip */ }
           }
-        });
-        res.data.on('end', () => resolve(full));
-        res.data.on('error', (e: Error) => reject(opts.signal?.aborted ? new Error('cancelled') : new Error(`OpenAI stream error: ${e.message}`)));
+        };
+        // Connection closed without the [DONE] sentinel: the stream was cut short, so don't
+        // pass a truncated answer back as a successful completion.
+        const onEnd = () => finish(() => (full
+          ? reject(new Error('OpenAI stream ended before completion (truncated response).'))
+          : reject(new Error('No response received from OpenAI'))));
+        const onError = (e: Error) => finish(() => reject(opts.signal?.aborted ? new Error('cancelled') : new Error(`OpenAI stream error: ${e.message}`)));
+        stream.on('data', onData);
+        stream.on('end', onEnd);
+        stream.on('error', onError);
       });
     } catch (error) {
       if (axios.isCancel(error)) throw new Error('cancelled');

@@ -12,6 +12,7 @@
 import { statSync } from 'fs';
 import { reconcileAll } from './reconcile';
 import type { MarkdownStore } from './markdown-store';
+import type { AIBlockMeta } from './sidecar';
 import type { NotebookEntry, NotebookIndex, NoteSummary, SearchHit } from './types';
 
 export interface SyncSummary {
@@ -90,11 +91,46 @@ export class NotebookStore {
     else this.index.setPinned(id, pinned);
   }
 
-  /** Update a note body from an in-app edit (preserves metadata + refreshes mtime). */
-  updateBody(id: string, body: string): void {
+  /** Replace a note's tags: frontmatter is the source of truth, so persist to the .md
+      (which reindexes with the new tags) — mirroring rename/setPinned. */
+  setTags(id: string, tags: string[]): void {
+    const e = this.files.read(id);
+    if (e) this.persist({ ...e, tags });
+    else this.index.setTags(id, tags);
+  }
+
+  /** Distinct tags across all live notes (for the tag filter / autocomplete). */
+  getAllTags(): string[] {
+    return this.index.getAllTags();
+  }
+
+  /**
+   * Update a note body from an in-app edit (preserves metadata + refreshes mtime). When
+   * `aiBlocks` is supplied, the AI-block sidecar is rewritten from it (the live doc is
+   * authoritative for which blocks exist, so this prunes orphaned metadata).
+   */
+  updateBody(id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>): void {
     const e = this.files.read(id);
     if (e) this.persist({ ...e, body });
     else this.index.updateBody(id, body);
+    if (aiBlocks) this.setAiBlocks(id, aiBlocks);
+  }
+
+  /** AI-block metadata for a note (for reconstructing the blocks on load). */
+  getAiBlocks(id: string): AIBlockMeta[] {
+    return this.files.readAiBlocks(id);
+  }
+
+  // Merge incoming blocks with the existing sidecar so each block's createdAt is preserved
+  // across saves (only new blocks get a fresh timestamp), then persist. Blocks absent from
+  // `incoming` are dropped — the prose (live doc) wins on existence.
+  private setAiBlocks(id: string, incoming: Array<Omit<AIBlockMeta, 'createdAt'>>): void {
+    const existing = new Map(this.files.readAiBlocks(id).map((b) => [b.blockId, b]));
+    const merged: AIBlockMeta[] = incoming.map((b) => ({
+      ...b,
+      createdAt: existing.get(b.blockId)?.createdAt ?? new Date().toISOString(),
+    }));
+    this.files.writeAiBlocks(id, merged);
   }
 
   /** Hide a note from list/search without deleting the file yet — the reversible first
@@ -142,6 +178,7 @@ export class NotebookStore {
             sourceKind: action.meta?.sourceKind,
             createdAt: action.meta?.createdAt,
             imagePath: action.meta?.imagePath,
+            pinned: action.meta?.pinned,
           });
           if (action.kind === 'insert') summary.inserted++;
           else if (action.kind === 'reindex') summary.reindexed++;
@@ -159,6 +196,14 @@ export class NotebookStore {
   }
 
   search(query: string): SearchHit[] {
-    return this.index.search(query);
+    // FTS5 MATCH throws a syntax error on stray operators/quotes in raw user input (a bare `"`,
+    // `AND`, etc). Guard here so both callers (notebook:search + panel:search) degrade to no
+    // results instead of surfacing an error.
+    try {
+      return this.index.search(query);
+    } catch (e) {
+      console.warn('search failed for query', JSON.stringify(query), e);
+      return [];
+    }
   }
 }

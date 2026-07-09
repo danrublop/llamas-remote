@@ -70,7 +70,13 @@ function getHook(): SelectionHookInstance | null {
     const mod = require('selection-hook');
     const SelectionHook = mod.default ?? mod;
     const instance: SelectionHookInstance = new SelectionHook();
-    if (instance.start()) {
+    // CRITICAL: disable the native module's built-in clipboard fallback. Left at its default
+    // (enableClipboard: true), `getCurrentSelection()` injects a synthetic Cmd+C and reads the
+    // clipboard whenever the AX read comes back empty — even on a passive hover trigger. That
+    // breaks the "passive AX read, no keystroke, no clipboard touch" contract (capture.ts) and
+    // janks the main thread. We own the synthetic-copy fallback in the tested JS orchestration
+    // (capture.ts), gated on an explicit user action; the native layer must never do its own.
+    if (instance.start({ enableClipboard: false })) {
       hook = instance;
     } else {
       console.warn('[capture] selection-hook start() returned false; using clipboard fallback.');

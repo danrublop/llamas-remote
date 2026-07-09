@@ -52,6 +52,8 @@ const api = {
   /** Open a native file picker; returns the chosen files' paths + display names. */
   pickFiles: (): Promise<Array<{ path: string; name: string }>> => ipcRenderer.invoke('panel:pick-files'),
   /** Open the notebook window now (watch the answer stream in). */
+  copyText: (text: string) => ipcRenderer.send('panel:copy', text),
+
   openNotebook: () => ipcRenderer.send('open-notebook'),
   /** Open the settings window (pull models, add cloud keys). */
   openSettings: () => ipcRenderer.send('open-settings'),
@@ -61,6 +63,9 @@ const api = {
   close: () => ipcRenderer.send('panel:close'),
   /** Toggle whether the window captures mouse events (true) or is click-through (false). */
   setInteractive: (on: boolean) => ipcRenderer.send('panel:set-interactive', on),
+  /** Take keyboard focus (so Esc / window-blur dismissal become live). Called when the
+   *  panel runs an action from a hover-open, which never grabbed focus on its own. */
+  focus: () => ipcRenderer.send('panel:focus'),
 
   /** Fired when the hotkey captured a selection (prefill the panel). */
   onCaptured: (cb: (data: PanelCaptured) => void) => {

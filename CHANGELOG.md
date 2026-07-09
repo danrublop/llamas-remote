@@ -3,6 +3,70 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.0] - 2026-07-09
+
+### Added
+- **Tables in notes.** A table button in the editor toolbar opens a Google-Docs-style grid picker — drag across the grid to size, click to insert. Columns are resizable, and tables round-trip through the on-disk Markdown as GFM pipe tables (verified so they survive save/reload).
+- **Code language on the block.** The syntax-highlighting language for a code block now lives as a dropdown on the block itself (top-right, on hover) instead of the toolbar, so each block picks its own language.
+- **Note tags.** Notes carry tags in their Markdown frontmatter (source of truth), indexed for search, shown as chips with tag filtering.
+- **Notch as a clipboard.** The selection box in the notch has a copy button (bottom-right on hover) that copies the captured text to the system clipboard; the scrollbar is hidden for a cleaner read.
+- **Empty-note placeholder** in the editor ("Start writing, or type / for AI…"), which also advertises the `/` slash command.
+
+### Changed
+- **`/` commands run on the note's text.** A slash command with nothing selected now operates on the note text above the command instead of sending an empty selection (which made the model riff on the command word). Highlighted text still takes priority.
+- Anthropic answers use a per-model `max_tokens` ceiling with an honest "(truncated)" marker instead of silently capping at 4096.
+- Faster dev builds and a non-blocking Ollama startup (the tray/notch no longer wait on the model pull).
+
+### Fixed
+- **Inline `/` generation no longer loses its answer on a note switch.** Switching notes mid-generation now cancels the run cleanly instead of discarding the finished answer and writing it to the wrong note.
+- Pins survive an index rebuild; a malformed or unreadable note file no longer vanishes a note or aborts the whole disk reconcile; note search no longer crashes on a stray quote.
+- Accessibility permission is now surfaced (once) when hovering the notch with no permission granted, instead of a silently blank capture box.
+- Hardening: Content-Security-Policy on both windows, navigation locked to the app's own pages, and guarded folder IPC handlers.
+
+## [1.5.0] - 2026-07-09
+
+### Added
+- **In-app auto-update.** The app now checks GitHub for new releases on launch, downloads them in the background, and installs the update on the next quit — with a "Check for Updates…" item in the tray menu for an on-demand check. Update checks only run in packaged builds.
+- **Signed & notarized publishing pipeline.** Releases are built, signed, and notarized through a reproducible `npm run release:mac` flow and published to GitHub. The signing/notarization step is a no-op when Apple credentials aren't present, so unsigned local builds still work. See `RELEASING.md` for the release flow and required secrets.
+
+### Changed
+- Removed stale pre-pivot release scripts and artifacts (old "i cant code" build/homebrew tooling) and fixed lingering references to the previous project name in the remaining release script.
+
+## [1.4.2] - 2026-07-09
+
+### Fixed
+- **AI blocks now survive reopening a note.** A `/`-command answer used to collapse into plain text the moment you switched notes or relaunched — losing its model label and the re-run button. Blocks are now stored alongside the note and rebuilt when it loads, so they stay AI blocks.
+- **Re-run works after a reload.** The command and the text a block ran on are saved with it, so re-running a block from an earlier session repeats the original request instead of a blank one.
+- **Running two things at once no longer cancels one of them.** A `/` command in a note and a notch capture (or a second `/` command in another block) used to abort each other and leave a block stuck spinning forever. Each generation is now independent, and a block always finishes or shows an error.
+- Text color, highlight, and code blocks are preserved when a note with AI blocks is reopened (they could previously be dropped on reload). Links in notes no longer open on a single click in the editor.
+
+## [1.4.1] - 2026-07-09
+
+### Fixed
+- **Editing one note can no longer bleed into another.** Switching notes within a fraction of a second of typing used to let the pending save land in the newly-opened note (corrupting it and losing the edit). Each note's edits are now saved to that note, no matter how fast you switch.
+- **Your last keystrokes are no longer dropped** when you switch notes, open Settings, or trigger a screen capture right after typing — the pending edit is flushed instead of discarded.
+- **Note files are now written atomically.** A crash, power loss, or full disk mid-save can no longer leave a half-written, unreadable note behind.
+- **Your folder layout is protected too.** The folder file is written atomically, and if it ever becomes unreadable it's backed up (not silently thrown away), so a bad write can't erase all your folders and note-to-folder assignments without a trace.
+
+## [1.4.0] - 2026-07-09
+
+### Added
+- **Notebook redesign** with a warm editorial look and a **dark mode** — toggle it with the sun/moon button in the top bar; your choice is remembered between launches.
+- **Folders in the sidebar.** Organize notes into nestable folders, drag notes between them, and drag folders into other folders. Two-finger click (or right-click) empty space to make a new note or folder; two-finger click a note or folder for its actions (rename, delete, pin), and the menu opens right where you clicked.
+- **Resizable sidebar.** Drag the divider on its right edge to set the width you like; it sticks.
+- **Rich text in notes:** set text color, highlight passages, and drop in **syntax-highlighted code blocks** for Java, Python, JavaScript, and more — all of which survive save/reload.
+- **Turn the notch on or off** from Settings, without quitting the app.
+- **Inline AI in the notebook is now switched on** — type `/` in a note to run a command and stream the answer straight into your text.
+
+### Changed
+- **Settings and Models are now one page**, reached from the sidebar footer.
+- The notch panel dismisses more predictably (Escape, click-away, and losing focus all behave consistently).
+
+### Fixed
+- Highlight and text-color survive the Markdown round-trip, and colors from imported/AI text are sanitized so notes stay safe to open anywhere.
+- A hand-edited or corrupt folder layout no longer hangs the app on launch.
+- Creating a folder inside a collapsed folder now reveals it for renaming instead of silently naming it "New Folder".
+
 ## [1.3.0] - 2026-05-26
 
 ### Changed

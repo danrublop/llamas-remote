@@ -193,13 +193,28 @@ body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: anti
   border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface);
 }
 .box.is-empty { border-style: dashed; background: transparent; align-items: center; justify-content: center; }
+/* Hint states (working / error) stay centered, like the empty box was */
+.box.s-running, .box.s-error { align-items: center; justify-content: center; }
 .box.s-error { border-color: rgba(255,107,94,0.5); }
 
-/* Scrollable selected text / response */
+/* Scrollable selected text / response — scrollbar hidden (still scrolls) */
 .sel-text {
   flex: 1; min-height: 0; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
   font-size: 12px; line-height: 1.5; color: var(--ink); padding: 10px 12px;
+  scrollbar-width: none;
 }
+.sel-text::-webkit-scrollbar { display: none; }
+
+/* Copy button — bottom-right of the selection box, fades in on hover (notch-as-clipboard) */
+.box-copy {
+  position: absolute; bottom: 8px; right: 8px; z-index: 1;
+  display: inline-flex; align-items: center; justify-content: center; padding: 4px;
+  color: var(--ink); background: rgba(255,255,255,0.10);
+  border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer;
+  opacity: 0; transition: opacity 0.12s, background 0.12s;
+}
+.box:hover .box-copy, .box-copy:focus-visible { opacity: 1; }
+.box-copy:hover { background: rgba(255,255,255,0.18); }
 /* Centered hint / status when the box is empty */
 .sel-hint { text-align: center; color: var(--muted); font-size: 12px; line-height: 1.5; padding: 12px; }
 .box.s-error .sel-hint { color: #ff6b5e; }

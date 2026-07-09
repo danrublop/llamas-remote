@@ -93,10 +93,20 @@ export class NotchController {
     }
 
     const selection = req.capture?.text ?? '';
-    const prompt = this.buildPrompt(req, preset, selection);
-    if (prompt.trim().length === 0) {
+    // Guard on the actual user-supplied content, NOT the assembled prompt: a preset
+    // renders its literal instruction text even with an empty selection, so checking the
+    // prompt would let a contentless preset query (e.g. `/explain` on an empty note) slip
+    // through and stream/persist a junk note. A bare image (kind:'image' + imagePath) counts.
+    const hasInput = !!(
+      selection.trim() ||
+      req.freeText?.trim() ||
+      req.attachments?.length ||
+      (req.kind === 'image' && req.imagePath)
+    );
+    if (!hasInput) {
       throw new Error('Nothing to ask — no selection, screenshot, or question provided');
     }
+    const prompt = this.buildPrompt(req, preset, selection);
 
     const { model } = routeModel(
       { kind: req.kind, preset, userSelectedModel: req.userSelectedModel },
@@ -142,7 +152,9 @@ export class NotchController {
       // No preset: freeform question about the selection.
       base = `${req.freeText.trim()}\n\n${selection}`;
     } else {
-      base = (req.freeText ?? selection).trim();
+      // `??` only falls back on null/undefined, so an empty-string freeText would discard
+      // the selection. Use `||` on the trimmed freeText so '' falls through to the selection.
+      base = req.freeText?.trim() || selection;
     }
     return this.appendAttachments(base, req.attachments);
   }

@@ -6,8 +6,9 @@ import type { ModelFit, DetailedModel, CatalogEntry, ModelsList } from '../main/
 export type { ModelFit, DetailedModel, CatalogEntry, ModelsList };
 
 interface SettingsAPI {
-  get: () => Promise<{ openaiKeySet: boolean; anthropicKeySet: boolean; defaultTextModel?: string; defaultVisionModel?: string }>;
+  get: () => Promise<{ openaiKeySet: boolean; anthropicKeySet: boolean; defaultTextModel?: string; defaultVisionModel?: string; notchEnabled: boolean }>;
   setKey: (provider: 'openai' | 'anthropic', key: string) => Promise<void>;
+  setNotchEnabled: (enabled: boolean) => Promise<void>;
   listModels: () => Promise<string[]>;
   pullModel: (name: string) => Promise<{ ok: boolean; error?: string }>;
   onPullProgress: (cb: (p: { name: string; status: string; percent: number }) => void) => () => void;
@@ -21,7 +22,7 @@ declare global { interface Window { settingsAPI: SettingsAPI } }
 /** The Settings UI. Reused by the standalone settings window (showDrag) and the
     notebook's in-pane settings view. Talks to window.settingsAPI, which both the
     settings and notebook preloads expose. */
-export function SettingsView({ showDrag = false }: { showDrag?: boolean }) {
+export function SettingsView({ showDrag = false, hideModels = false }: { showDrag?: boolean; hideModels?: boolean }) {
   const [openaiSet, setOpenaiSet] = useState(false);
   const [anthropicSet, setAnthropicSet] = useState(false);
   const [openaiKey, setOpenaiKey] = useState('');
@@ -31,11 +32,17 @@ export function SettingsView({ showDrag = false }: { showDrag?: boolean }) {
   const [pulling, setPulling] = useState(false);
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
+  const [notchOn, setNotchOn] = useState(true);
 
   const refreshModels = () => window.settingsAPI.listModels().then(setModels).catch(() => {});
 
+  function toggleNotch(on: boolean) {
+    setNotchOn(on);
+    window.settingsAPI.setNotchEnabled(on).catch(() => {});
+  }
+
   useEffect(() => {
-    window.settingsAPI.get().then((s) => { setOpenaiSet(s.openaiKeySet); setAnthropicSet(s.anthropicKeySet); });
+    window.settingsAPI.get().then((s) => { setOpenaiSet(s.openaiKeySet); setAnthropicSet(s.anthropicKeySet); setNotchOn(s.notchEnabled); });
     refreshModels();
     const off = window.settingsAPI.onPullProgress((p) => setProgress(`${p.status} ${p.percent ? p.percent + '%' : ''}`.trim()));
     return off;
@@ -64,8 +71,22 @@ export function SettingsView({ showDrag = false }: { showDrag?: boolean }) {
   return (
     <div className="wrap">
       {showDrag && <div className="drag" />}
-      <h1>Settings</h1>
+      {!hideModels && <h1>Settings</h1>}
 
+      <div className="section">
+        <h2>Notch</h2>
+        <div className="switch-row">
+          <span className="switch-text">
+            <span className="switch-title">Dynamic-Island notch</span>
+            <span className="hint">Show the notch panel and enable ⌘⇧Space to capture text and ask. Turn off to hide it — the menu-bar icon stays.</span>
+          </span>
+          <button role="switch" aria-checked={notchOn} className={`switch${notchOn ? ' on' : ''}`} onClick={() => toggleNotch(!notchOn)} title={notchOn ? 'Turn notch off' : 'Turn notch on'}>
+            <span className="switch-knob" />
+          </button>
+        </div>
+      </div>
+
+      {!hideModels && (
       <div className="section">
         <h2>Local models (Ollama)</h2>
         <div className="models">
@@ -79,6 +100,7 @@ export function SettingsView({ showDrag = false }: { showDrag?: boolean }) {
         {progress && <div className="progress">{progress}</div>}
         {error && <div className="err">{error}</div>}
       </div>
+      )}
 
       <div className="section">
         <h2>OpenAI</h2>

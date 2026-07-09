@@ -26,6 +26,10 @@ export interface AIBlockMeta {
   prompt: string;
   /** Model id used (persisted so re-run reuses it). */
   model: string;
+  /** Slash-command (preset) id, if the block came from a `/` command — for cross-session re-run. */
+  commandId?: string;
+  /** The text the command ran on — persisted so a re-run after reload reuses the same input. */
+  selection?: string;
   /** ISO timestamp the block was generated. */
   createdAt: string;
 }
@@ -36,6 +40,36 @@ export interface SidecarFile {
 }
 
 const ANCHOR_RE = /<!--\s*ai:([a-zA-Z0-9_-]+)\s*-->/g;
+const BLOCK_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+const MAX_FIELD = 100_000; // cap a field so a runaway selection can't bloat the sidecar
+
+/**
+ * Coerce untrusted renderer-supplied AI-block metadata into safe, well-typed entries before
+ * it's written to disk. Drops anything without a valid blockId, dedups repeated blockIds
+ * (copy/paste of a block yields two nodes sharing one id — keep the first), and caps string
+ * fields. `createdAt` is intentionally NOT accepted here; the store fills/preserves it.
+ */
+export function sanitizeIncomingBlocks(input: unknown): Array<Omit<AIBlockMeta, 'createdAt'>> {
+  if (!Array.isArray(input)) return [];
+  const out: Array<Omit<AIBlockMeta, 'createdAt'>> = [];
+  const seen = new Set<string>();
+  const str = (v: unknown): string | undefined => (typeof v === 'string' ? v.slice(0, MAX_FIELD) : undefined);
+  for (const raw of input) {
+    if (!raw || typeof raw !== 'object') continue;
+    const b = raw as Record<string, unknown>;
+    const blockId = b.blockId;
+    if (typeof blockId !== 'string' || !BLOCK_ID_RE.test(blockId) || seen.has(blockId)) continue;
+    seen.add(blockId);
+    out.push({
+      blockId,
+      prompt: str(b.prompt) ?? '',
+      model: str(b.model) ?? '',
+      commandId: str(b.commandId),
+      selection: str(b.selection),
+    });
+  }
+  return out;
+}
 
 /**
  * Extract AI-block anchor ids from a Markdown body, in document order. Tolerant of

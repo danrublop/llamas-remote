@@ -2,8 +2,10 @@
 //
 // Holds cloud-provider API keys (OpenAI / Anthropic). Keys are encrypted at rest with
 // Electron safeStorage (OS keychain-backed) and stored as `enc:<base64>`. In memory they
-// are plaintext for use by the LLM clients. If encryption is unavailable (rare), we fall
-// back to plaintext and migrate to encrypted on the next save.
+// are plaintext for use by the LLM clients. If encryption is unavailable (e.g. the keychain
+// is locked), we NEVER write the key in plaintext — it is kept in memory for the current
+// session only and omitted from disk (the user re-enters it next launch). Legacy plaintext
+// keys from older builds are still read on load and re-encrypted on the next save.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
@@ -21,6 +23,8 @@ export interface AppSettings {
   defaultVisionModel?: string;
   /** User-defined slash commands (Exp-5). Stored plaintext (not secrets). */
   customPresets?: Preset[];
+  /** Whether the notch panel + its global shortcut are active. Defaults to on. */
+  notchEnabled?: boolean;
 }
 
 export class SettingsService {
@@ -36,6 +40,7 @@ export class SettingsService {
           defaultTextModel: raw.defaultTextModel,
           defaultVisionModel: raw.defaultVisionModel,
           customPresets: Array.isArray(raw.customPresets) ? raw.customPresets : [],
+          notchEnabled: raw.notchEnabled,
         };
         // Migrate any legacy plaintext keys to encrypted at rest, once.
         const hasLegacyPlaintext = [raw.openaiKey, raw.anthropicKey].some((v) => v && !v.startsWith('enc:'));
@@ -62,13 +67,24 @@ export class SettingsService {
   }
 
   /** Returns a redacted view (keys -> boolean "set") plus default model picks for the renderer. */
-  getRedacted(): { openaiKeySet: boolean; anthropicKeySet: boolean; defaultTextModel?: string; defaultVisionModel?: string } {
+  getRedacted(): { openaiKeySet: boolean; anthropicKeySet: boolean; defaultTextModel?: string; defaultVisionModel?: string; notchEnabled: boolean } {
     return {
       openaiKeySet: !!this.settings.openaiKey,
       anthropicKeySet: !!this.settings.anthropicKey,
       defaultTextModel: this.settings.defaultTextModel,
       defaultVisionModel: this.settings.defaultVisionModel,
+      notchEnabled: this.isNotchEnabled(),
     };
+  }
+
+  /** Whether the notch is active (defaults to on when unset). */
+  isNotchEnabled(): boolean {
+    return this.settings.notchEnabled !== false;
+  }
+
+  setNotchEnabled(enabled: boolean): void {
+    this.settings.notchEnabled = enabled;
+    this.save();
   }
 
   setKey(provider: 'openai' | 'anthropic', key: string): void {
@@ -121,6 +137,7 @@ export class SettingsService {
         defaultTextModel: this.settings.defaultTextModel,
         defaultVisionModel: this.settings.defaultVisionModel,
         customPresets: this.settings.customPresets ?? [],
+        notchEnabled: this.settings.notchEnabled,
       };
       // Atomic write: a crash mid-write must not truncate the real file (which would
       // wipe the encrypted keys on next launch). Write a temp file then rename over.
@@ -133,12 +150,20 @@ export class SettingsService {
   }
 }
 
+/** Encrypt a key for disk. Returns ciphertext (`enc:…`), or undefined when there's no key
+ *  OR encryption is unavailable — we never persist an API key in plaintext. When a key
+ *  exists but can't be encrypted, it stays in memory for the session and is dropped from
+ *  the file (a warning is logged), so a locked keychain can't leak keys to disk. */
 function encrypt(value?: string): string | undefined {
   if (!value) return undefined;
   try {
     if (safeStorage.isEncryptionAvailable()) return `enc:${safeStorage.encryptString(value).toString('base64')}`;
-  } catch { /* fall through */ }
-  return value; // plaintext fallback
+  } catch { /* fall through to the unavailable path */ }
+  console.warn(
+    'safeStorage encryption is unavailable — API key kept in memory for this session only and ' +
+      'NOT written to disk. Re-enter it next launch, or unlock the OS keychain.',
+  );
+  return undefined; // never plaintext at rest
 }
 
 function decrypt(value?: string): string | undefined {

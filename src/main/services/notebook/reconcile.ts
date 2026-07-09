@@ -8,7 +8,9 @@
 // caller; this module is deliberately I/O-free so every branch is unit-testable.
 //
 //   DISK present ─┬─ no row ............................ INSERT
-//                 ├─ row tombstoned ................... REVIVE   (re-index from disk)
+//                 ├─ row tombstoned + disk newer than
+//                 │   the tombstone .................... REVIVE   (genuine re-creation)
+//                 ├─ row tombstoned + disk not newer ... NOOP     (undo window — stay hidden)
 //                 ├─ disk newer than indexed .......... REINDEX  (markdown body wins)
 //                 └─ disk not newer ................... NOOP
 //   DISK absent ──┬─ row present, not tombstoned ...... TOMBSTONE
@@ -29,6 +31,14 @@ export interface IndexRow {
   /** File mtime (ms) captured the last time this row was indexed. */
   indexedMtimeMs: number;
   tombstoned: boolean;
+  /**
+   * Wall-clock ms when this row was tombstoned (hidden), or undefined if never hidden /
+   * hidden by an older index that didn't record it. Soft-delete leaves the .md file on
+   * disk during the undo window, so we use this to tell a genuine re-creation (file newer
+   * than the tombstone → REVIVE) from a note still inside its undo window (file not newer
+   * → stay hidden). See {@link reconcileEntry}.
+   */
+  tombstonedAtMs?: number;
 }
 
 /** Frontmatter metadata carried from disk so a rebuilt index can recover it. */
@@ -39,6 +49,7 @@ export interface DiskMeta {
   sourceKind?: 'text' | 'image';
   createdAt?: string;
   imagePath?: string;
+  pinned?: boolean;
 }
 
 /** What the markdown file on disk currently contains. */
@@ -52,6 +63,8 @@ export interface DiskEntry {
   mtimeMs: number;
   /** Other frontmatter (title/model/source/createdAt) so reconcile can restore it. */
   meta?: DiskMeta;
+  /** File exists but couldn't be parsed — present so reconcile won't tombstone a live note. */
+  unparseable?: boolean;
 }
 
 export interface ReconcileAction {
@@ -103,6 +116,12 @@ export function reconcileEntry(
     return { kind: 'noop', id, reason: 'no file and nothing live to tombstone' };
   }
 
+  // File is present but couldn't be parsed. Never tombstone it — the file (with content)
+  // still exists on disk, so hiding it would look like data loss. Keep any existing row as-is.
+  if (disk.unparseable) {
+    return { kind: 'noop', id: disk.id, reason: 'file present but unparseable — keeping existing row' };
+  }
+
   // File exists but was never indexed.
   if (!row) {
     return {
@@ -116,8 +135,21 @@ export function reconcileEntry(
     };
   }
 
-  // File exists and a tombstoned row exists -> the user re-created (or restored) it.
+  // A tombstoned row whose file is still on disk. Soft-delete deliberately leaves the .md
+  // in place during the undo window (real removal happens ~6s later at commit), so the
+  // mere presence of the file is NOT evidence the user re-created it. Only revive when the
+  // file is genuinely newer than the moment we tombstoned it — otherwise a focus-resync or
+  // relaunch inside the undo window would resurrect a "deleted" note. A note that was
+  // actually re-created or edited on disk after deletion has a newer mtime and still revives.
+  // (Rows tombstoned by an older index carry no timestamp → treat as a re-creation, the
+  // prior behaviour, since by then the undo window has long passed.)
   if (row.tombstoned) {
+    const REVIVE_EPSILON_MS = 1; // guard against equal-ms fs/clock ties
+    const reCreated =
+      row.tombstonedAtMs === undefined || disk.mtimeMs > row.tombstonedAtMs + REVIVE_EPSILON_MS;
+    if (!reCreated) {
+      return { kind: 'noop', id: disk.id, reason: 'tombstoned within undo window (file not newer than tombstone)' };
+    }
     return {
       kind: 'revive',
       id: disk.id,
@@ -125,7 +157,7 @@ export function reconcileEntry(
       tags: mergeTags(row.tags, disk.frontmatterTags),
       mtimeMs: disk.mtimeMs,
       meta: disk.meta,
-      reason: 'file present again for a tombstoned entry',
+      reason: 'file newer than tombstone — genuine re-creation',
     };
   }
 

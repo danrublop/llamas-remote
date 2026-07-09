@@ -12,6 +12,9 @@ import { readStreamErrorMessage } from './stream-error';
 
 const BASE_URL = 'http://127.0.0.1:11434';
 const TIMEOUT_MS = 300000;
+// A pull has no overall deadline (large models take a while), but if no chunk arrives for
+// this long the connection is wedged — reject instead of hanging forever on timeout:0.
+const PULL_IDLE_MS = 60000;
 
 export class OllamaLlmClient implements LlmClient {
   /** List locally installed model names (for the panel's model picker). Empty on failure. */
@@ -46,7 +49,27 @@ export class OllamaLlmClient implements LlmClient {
     const res = await axios.post(`${BASE_URL}/api/pull`, { name, stream: true }, { responseType: 'stream', timeout: 0 });
     return await new Promise<void>((resolve, reject) => {
       let buffer = '';
+      let settled = false;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      // Terminate on the first terminal event: stop the socket, clear the idle timer, and
+      // detach — so an {error} line stops buffering and a stalled pull can't hang forever.
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (idleTimer) clearTimeout(idleTimer);
+        res.data.destroy();
+        fn();
+      };
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(
+          () => finish(() => reject(new Error(`Ollama pull stalled (no progress for ${PULL_IDLE_MS / 1000}s).`))),
+          PULL_IDLE_MS,
+        );
+      };
+      resetIdle();
       res.data.on('data', (chunk: Buffer) => {
+        resetIdle();
         buffer += chunk.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
@@ -56,12 +79,14 @@ export class OllamaLlmClient implements LlmClient {
             const d = JSON.parse(line);
             const pct = d.total ? Math.round((d.completed ?? 0) / d.total * 100) : 0;
             onProgress?.(String(d.status ?? ''), pct);
-            if (d.error) reject(new Error(d.error));
+            // Ollama reports pull failures as an {"error":...} line over HTTP 200; reject and
+            // stop rather than continuing to buffer to a false "success" at stream end.
+            if (d.error) { finish(() => reject(new Error(d.error))); return; }
           } catch { /* skip */ }
         }
       });
-      res.data.on('end', () => resolve());
-      res.data.on('error', (e: Error) => reject(new Error(`Ollama pull error: ${e.message}`)));
+      res.data.on('end', () => finish(() => resolve()));
+      res.data.on('error', (e: Error) => finish(() => reject(new Error(`Ollama pull error: ${e.message}`))));
     });
   }
 
@@ -89,10 +114,23 @@ export class OllamaLlmClient implements LlmClient {
         signal: opts.signal,
       });
 
+      const stream = response.data;
       return await new Promise<string>((resolve, reject) => {
         let full = '';
         let buffer = '';
-        response.data.on('data', (chunk: Buffer) => {
+        let settled = false;
+        // Stop the socket and detach listeners on the first terminal event, so post-`done`
+        // chunks can't keep firing onToken (ghost tokens) after we've resolved.
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          stream.removeListener('data', onData);
+          stream.removeListener('end', onEnd);
+          stream.removeListener('error', onError);
+          stream.destroy();
+          fn();
+        };
+        const onData = (chunk: Buffer) => {
           buffer += chunk.toString();
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
@@ -104,17 +142,21 @@ export class OllamaLlmClient implements LlmClient {
                 full += data.response;
                 opts.onToken?.(data.response); // delta chunk, not cumulative
               }
-              if (data.done) resolve(full);
+              if (data.done) { finish(() => resolve(full)); return; }
             } catch {
               // skip malformed line
             }
           }
-        });
-        response.data.on('end', () => {
-          if (full) resolve(full);
-          else reject(new Error('No response received from Ollama'));
-        });
-        response.data.on('error', (err: Error) => reject(opts.signal?.aborted ? new Error('cancelled') : new Error(`Ollama stream error: ${err.message}`)));
+        };
+        // Stream ended without a `done:true` marker: the generation was cut short. Treat it
+        // as a failure rather than silently persisting a partial answer as if complete.
+        const onEnd = () => finish(() => reject(new Error(
+          full ? 'Ollama stream ended before completion (truncated response).' : 'No response received from Ollama',
+        )));
+        const onError = (err: Error) => finish(() => reject(opts.signal?.aborted ? new Error('cancelled') : new Error(`Ollama stream error: ${err.message}`)));
+        stream.on('data', onData);
+        stream.on('end', onEnd);
+        stream.on('error', onError);
       });
     } catch (error) {
       if (axios.isCancel(error)) throw new Error('cancelled');

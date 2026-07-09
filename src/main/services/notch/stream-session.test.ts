@@ -55,6 +55,17 @@ describe('StreamSession — readiness queue', () => {
     session.markReady();
     expect(sent).toEqual([{ channel: 'notebook:done', payload: 'answer' }]);
   });
+
+  it('drops a stray late token emitted AFTER the run ended (ghost-token guard)', () => {
+    const { session, sent } = setup();
+    const { runId } = session.beginRun();
+    session.markReady();
+    session.emit(runId, 'notebook:token', 'real');
+    session.endRun(runId); // run done
+    // A not-yet-GC'd provider stream fires one more token after completion — must be dropped.
+    session.emit(runId, 'notebook:token', 'ghost');
+    expect(sent).toEqual([{ channel: 'notebook:token', payload: 'real' }]);
+  });
 });
 
 describe('StreamSession — supersede', () => {

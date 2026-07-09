@@ -11,18 +11,23 @@
 //
 // Markdown is the on-disk format: load via setContent(md, markdown), save via getMarkdown().
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useEditor, EditorContent, ReactNodeViewRenderer } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import { Markdown } from '@tiptap/markdown';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEditor, EditorContent, ReactNodeViewRenderer, type Editor } from '@tiptap/react';
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { AiBlock } from './ai-block';
 import { AiBlockView } from './ai-block-view';
-import { setAiBlockText, setAiBlockAttrs } from './doc-helpers';
+import { CodeBlockView } from './code-block-view';
+import { notebookExtensions, lowlight } from './extensions';
+import { markdownToDoc } from './reconstruct';
+import { setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown, collectAiBlocks } from './doc-helpers';
 import { mergeCommands, filterCommands, type SlashCommand } from '../../main/services/presets/slash-commands';
+import type { AIBlockMeta } from '../../main/services/notebook/sidecar';
 
 // The inline-generation slice of window.notebookAPI (preload-notebook.ts).
 interface GenerateApi {
   generate: (req: { blockId: string; commandId?: string; freeText?: string; selection?: string; userSelectedModel?: string }) => Promise<{ ok: boolean; error?: string }>;
+  /** Aborts all in-flight inline generations in main (added to the preload bridge in parallel). */
+  cancelGen?: () => Promise<void>;
   onGenStart: (cb: (p: { blockId: string; model: string }) => void) => () => void;
   onGenToken: (cb: (p: { blockId: string; delta: string }) => void) => () => void;
   onGenDone: (cb: (p: { blockId: string; answer: string; model: string }) => void) => () => void;
@@ -38,15 +43,36 @@ const AiBlockWithView = AiBlock.extend({
   },
 });
 
+// Code block with a React NodeView (in-block language dropdown). Extend BEFORE configure so
+// the lowlight instance is preserved; reuses the shared lowlight from extensions.ts.
+const CodeBlockWithView = CodeBlockLowlight.extend({
+  addNodeView() {
+    return ReactNodeViewRenderer(CodeBlockView);
+  },
+}).configure({ lowlight });
+
 export interface NotebookEditorProps {
+  /**
+   * Id of the note this editor holds. Saves are keyed to THIS id (not whatever is currently
+   * selected), so a debounced save that fires after the user switched notes still writes to
+   * the note it came from — never the newly-selected one.
+   */
+  noteId: string | null;
   /** Initial body as Markdown. */
   markdown: string;
+  /** AI-block metadata (from the note's sidecar) used to reconstruct AI blocks on load. */
+  aiBlocks?: AIBlockMeta[];
   /** Model id to use for generation (per-note / picker selection). */
   model?: string;
   /** User-defined slash commands (from settings); merged after the built-ins. */
   userCommands?: SlashCommand[];
-  /** Called (debounced) when the body changes, with the current Markdown. */
-  onChange?: (markdown: string) => void;
+  /**
+   * Called (debounced/flushed) when the body changes, with the owning note id, current
+   * Markdown, and the AI blocks now in the doc (so the parent can persist the sidecar).
+   */
+  onChange?: (noteId: string | null, markdown: string, aiBlocks: Array<Omit<AIBlockMeta, 'createdAt'>>) => void;
+  /** Receives the live editor instance (for parent-rendered toolbar controls). */
+  onEditorReady?: (editor: Editor | null) => void;
 }
 
 interface MenuState {
@@ -62,26 +88,78 @@ interface MenuState {
 
 const CLOSED: MenuState = { open: false, query: '', left: 0, top: 0, index: 0, from: 0 };
 
-export function NotebookEditor({ markdown, model, userCommands = [], onChange }: NotebookEditorProps) {
+export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
   const [menu, setMenu] = useState<MenuState>(CLOSED);
   const buffers = useRef<Map<string, string>>(new Map());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest un-persisted body + AI blocks; held so we can flush them on unmount (note switch /
+  // view change / notch capture) instead of dropping the last <400ms of edits with the timer.
+  const pendingMarkdown = useRef<string | null>(null);
+  const pendingBlocks = useRef<Array<Omit<AIBlockMeta, 'createdAt'>>>([]);
+  // onChange can change identity (parent useCallback deps) — keep a live ref so the once-created
+  // onUpdate closure + unmount flush call the latest one.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  // noteId is FROZEN at mount, deliberately not updated on re-render. This editor is a fresh
+  // instance per note (parent remounts it via `key`), and `selectedId` flips to the next note
+  // BEFORE this instance unmounts — so reading a live prop would misroute the outgoing note's
+  // flush into the incoming note. The mount-time id is the note this editor actually holds.
+  const noteIdRef = useRef(noteId);
   const commands = mergeCommands(userCommands);
   const results = menu.open ? filterCommands(commands, menu.query, 'text') : [];
 
+  // Reconstruct the initial doc (AI blocks rebuilt from the sidecar) ONCE per mount — this
+  // editor remounts per note, so the mount-time markdown/aiBlocks are the note's. markdownToDoc
+  // spins up a throwaway parser, so it must not run on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const initialContent = useMemo(() => markdownToDoc(markdown, aiBlocks), []);
+
+  // Persist immediately, cancelling any pending debounce. Called on every note switch/unmount.
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    if (pendingMarkdown.current != null) {
+      onChangeRef.current?.(noteIdRef.current, pendingMarkdown.current, pendingBlocks.current);
+      pendingMarkdown.current = null;
+    }
+  }, []);
+
   const editor = useEditor({
-    extensions: [StarterKit, Markdown, AiBlockWithView],
-    content: markdown,
-    contentType: 'markdown' as never,
+    // One shared schema for the live editor + the headless parse/serialize paths, with the
+    // React NodeView spliced in for the AI block. Reconstruct AI blocks from the sidecar on
+    // load (their anchors don't survive a plain markdown parse — see reconstruct.ts).
+    extensions: notebookExtensions({ aiBlock: AiBlockWithView, codeBlock: CodeBlockWithView }),
+    content: initialContent,
     onUpdate: ({ editor }) => {
-      if (onChange) {
+      if (onChangeRef.current) {
+        const md = editor.getMarkdown();
+        const blocks = collectAiBlocks(editor);
+        const id = noteIdRef.current;
+        pendingMarkdown.current = md;
+        pendingBlocks.current = blocks;
         if (saveTimer.current) clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(() => onChange(editor.getMarkdown()), 400);
+        saveTimer.current = setTimeout(() => {
+          saveTimer.current = null;
+          pendingMarkdown.current = null;
+          onChangeRef.current?.(id, md, blocks);
+        }, 400);
       }
       detectSlash();
     },
     onSelectionUpdate: () => detectSlash(),
   });
+
+  // Flush any pending body when this editor unmounts (note switch, view change, capture). The
+  // orphaned timer would otherwise fire post-unmount; flushing here saves those edits, keyed to
+  // this editor's own noteId. Also abort any in-flight inline generation: this editor is keyed
+  // per note, so on unmount its blocks are gone — an un-cancelled run's gen-done would otherwise
+  // misroute into the newly-mounted editor and trigger a spurious cross-note save.
+  useEffect(() => () => { flushSave(); genApi().cancelGen?.(); }, [flushSave]);
+
+  // Hand the live editor up to the parent so its toolbar can drive color / code-block commands.
+  useEffect(() => {
+    onEditorReady?.(editor);
+    return () => onEditorReady?.(null);
+  }, [editor, onEditorReady]);
 
   // ---- slash detection -----------------------------------------------------------------
   const detectSlash = useCallback(() => {
@@ -103,7 +181,11 @@ export function NotebookEditor({ markdown, model, userCommands = [], onChange }:
     if (!editor) return;
     const { state } = editor;
     const sel = state.selection;
-    const selection = sel.empty ? '' : state.doc.textBetween(sel.from, sel.to, '\n');
+    // Explicit highlight wins; otherwise run the command on the note's text ABOVE the `/`, so
+    // `/explain` under a paragraph explains that paragraph instead of sending an empty selection
+    // (which makes the model just riff on the command word). menu.from is the `/` position.
+    const highlighted = sel.empty ? '' : state.doc.textBetween(sel.from, sel.to, '\n');
+    const selection = highlighted || state.doc.textBetween(0, menu.from, '\n').trim();
     const blockId = crypto.randomUUID();
 
     editor
@@ -153,10 +235,19 @@ export function NotebookEditor({ markdown, model, userCommands = [], onChange }:
       setAiBlockText(editor, blockId, cur);
     });
     const offDone = api.onGenDone(({ blockId, answer, model: m }) => {
-      setAiBlockText(editor, blockId, answer || (buffers.current.get(blockId) ?? ''));
-      setAiBlockAttrs(editor, blockId, { state: 'done', model: m });
+      // Parse the final answer Markdown into real nodes (lists/headings/code render
+      // properly and round-trip to Markdown) instead of leaving it as literal text.
+      const applied = setAiBlockMarkdown(editor, blockId, answer || (buffers.current.get(blockId) ?? ''));
       buffers.current.delete(blockId);
-      if (onChange) onChange(editor.getMarkdown());
+      // Block not found → it belongs to another note (this run started elsewhere and got
+      // misrouted here, or the block was deleted mid-stream). setAiBlockMarkdown was a no-op,
+      // so DON'T save — writing now would clobber this note with the wrong note's content.
+      if (!applied) return;
+      setAiBlockAttrs(editor, blockId, { state: 'done', model: m });
+      // A completed AI block is a real edit — persist it now (also clears any pending debounce).
+      pendingMarkdown.current = null;
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+      onChangeRef.current?.(noteIdRef.current, editor.getMarkdown(), collectAiBlocks(editor));
     });
     const offErr = api.onGenError(({ blockId }) => {
       setAiBlockAttrs(editor, blockId, { state: 'error' });

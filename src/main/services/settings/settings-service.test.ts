@@ -42,9 +42,9 @@ afterEach(() => {
 describe('SettingsService', () => {
   it('redacts keys for the renderer (boolean "set", never the value)', () => {
     const s = new SettingsService(file);
-    expect(s.getRedacted()).toEqual({ openaiKeySet: false, anthropicKeySet: false });
+    expect(s.getRedacted()).toEqual({ openaiKeySet: false, anthropicKeySet: false, notchEnabled: true });
     s.setKey('openai', 'sk-secret');
-    expect(s.getRedacted()).toEqual({ openaiKeySet: true, anthropicKeySet: false });
+    expect(s.getRedacted()).toEqual({ openaiKeySet: true, anthropicKeySet: false, notchEnabled: true });
   });
 
   it('persists keys encrypted at rest and decrypts them on reload', () => {
@@ -71,10 +71,17 @@ describe('SettingsService', () => {
     expect(s.getRedacted().openaiKeySet).toBe(false);
   });
 
-  it('falls back to plaintext when encryption is unavailable', () => {
+  it('never writes a key in plaintext when encryption is unavailable (memory-only for the session)', () => {
     encryptionAvailable = false;
-    new SettingsService(file).setKey('openai', 'sk-plain-fallback');
-    expect(JSON.parse(readFileSync(file, 'utf8')).openaiKey).toBe('sk-plain-fallback');
+    const s = new SettingsService(file);
+    s.setKey('openai', 'sk-plain-fallback');
+    // Usable in memory this session…
+    expect(s.get().openaiKey).toBe('sk-plain-fallback');
+    // …but the key is omitted from disk — never persisted in cleartext.
+    const onDisk = JSON.parse(readFileSync(file, 'utf8'));
+    expect(onDisk.openaiKey).toBeUndefined();
+    // A fresh instance therefore has no key (the user re-enters it).
+    expect(new SettingsService(file).get().openaiKey).toBeUndefined();
   });
 
   // Documents a real failure mode (review finding): if a stored ciphertext can't be
@@ -124,6 +131,30 @@ describe('SettingsService', () => {
       const reloaded = new SettingsService(file);
       expect(reloaded.get().openaiKey).toBe('sk-x');
       expect(reloaded.getCustomPresets()).toHaveLength(1);
+    });
+  });
+
+  describe('notchEnabled', () => {
+    it('defaults to on when unset', () => {
+      const s = new SettingsService(file);
+      expect(s.isNotchEnabled()).toBe(true);
+    });
+
+    it('persists a disable across reload (only explicit false turns it off)', () => {
+      new SettingsService(file).setNotchEnabled(false);
+      const reloaded = new SettingsService(file);
+      expect(reloaded.isNotchEnabled()).toBe(false);
+      expect(reloaded.getRedacted().notchEnabled).toBe(false);
+    });
+
+    it('re-enabling persists and does not disturb stored keys', () => {
+      const s = new SettingsService(file);
+      s.setKey('openai', 'sk-keep');
+      s.setNotchEnabled(false);
+      s.setNotchEnabled(true);
+      const reloaded = new SettingsService(file);
+      expect(reloaded.isNotchEnabled()).toBe(true);
+      expect(reloaded.get().openaiKey).toBe('sk-keep');
     });
   });
 });
