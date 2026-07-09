@@ -1,4 +1,5 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, systemPreferences, shell, dialog } from 'electron';
+import { autoUpdater } from 'electron-updater';
 import { join, extname, basename } from 'path';
 import { randomUUID } from 'crypto';
 import { rmSync, existsSync, readFileSync, statSync } from 'fs';
@@ -91,6 +92,7 @@ class MainProcess {
     }
     this.setupNotchIpc();
     this.handleAppLifecycle();
+    this.setupAutoUpdate();
 
     // No dock icon — this is a menu-bar utility.
     if (process.platform === 'darwin') app.dock?.hide();
@@ -359,6 +361,8 @@ class MainProcess {
         { label: 'Notebook', click: () => this.showNotebook() },
         { label: 'Settings…', click: () => this.showSettings() },
         { type: 'separator' },
+        { label: 'Check for Updates…', click: () => this.checkForUpdatesManually() },
+        { type: 'separator' },
         { label: 'Quit Llamas Remote', click: () => app.quit() },
       ]);
       this.tray.setContextMenu(menu);
@@ -371,6 +375,63 @@ class MainProcess {
   private toggleNotch(): void {
     // The island always hangs from the notch; tray/activate just pops it open.
     this.handleNotchHotkey();
+  }
+
+  // ── Auto-update ────────────────────────────────────────────────────────────────────────
+  // Whether a downloaded update is staged and waiting for the next quit to install.
+  private updateReady = false;
+  // Set while a user-initiated "Check for Updates…" is in flight, so the (otherwise silent)
+  // update events surface a dialog only for the manual path — the launch check stays quiet.
+  private manualCheck = false;
+
+  // Wire electron-updater: check the GitHub release feed on launch, download in the
+  // background, and install on quit. NOTE: on macOS this only works for a SIGNED + notarized
+  // build (electron-updater verifies the signature); an unsigned build silently no-ops. See
+  // RELEASING.md for the signing/publish setup.
+  private setupAutoUpdate(): void {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('error', (err: Error) => {
+      console.warn('[auto-update] error:', err?.message ?? err);
+      if (this.manualCheck) { this.manualCheck = false; this.updateDialog('warning', 'Could not check for updates.', String(err?.message ?? err)); }
+    });
+    autoUpdater.on('update-not-available', () => {
+      if (this.manualCheck) { this.manualCheck = false; this.updateDialog('info', "You're up to date.", `Llamas Remote ${app.getVersion()} is the latest version.`); }
+    });
+    autoUpdater.on('update-available', () => {
+      if (this.manualCheck) { this.manualCheck = false; this.updateDialog('info', 'Downloading update…', 'It will install the next time you quit Llamas Remote.'); }
+    });
+    autoUpdater.on('update-downloaded', (info: { version: string }) => {
+      this.updateReady = true;
+      this.tray?.setToolTip(`Llamas Remote — update ${info.version} ready (restart to install)`);
+    });
+    // Dev builds have no update feed (and no app-update.yml); only check when packaged.
+    if (app.isPackaged) {
+      autoUpdater.checkForUpdatesAndNotify().catch((e) => console.warn('[auto-update] initial check failed:', e?.message ?? e));
+    }
+  }
+
+  private checkForUpdatesManually(): void {
+    if (!app.isPackaged) {
+      this.updateDialog('info', 'Updates unavailable in development', 'Run the installed app to receive updates.');
+      return;
+    }
+    if (this.updateReady) {
+      dialog
+        .showMessageBox({ type: 'info', message: 'Update ready', detail: 'Restart Llamas Remote to install the downloaded update.', buttons: ['Restart Now', 'Later'], defaultId: 0, cancelId: 1 })
+        .then(({ response }) => { if (response === 0) setImmediate(() => autoUpdater.quitAndInstall()); })
+        .catch(() => {});
+      return;
+    }
+    this.manualCheck = true;
+    autoUpdater.checkForUpdates().catch((e) => {
+      this.manualCheck = false;
+      this.updateDialog('warning', 'Could not check for updates.', String(e?.message ?? e));
+    });
+  }
+
+  private updateDialog(type: 'info' | 'warning', message: string, detail: string): void {
+    dialog.showMessageBox({ type, message, detail, buttons: ['OK'] }).catch(() => {});
   }
 
   // The notebook is the content window: a normal resizable window where answers stream in.

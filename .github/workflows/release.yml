@@ -5,62 +5,61 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
     runs-on: macos-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        
-    - name: Install dependencies
-      run: npm ci
-      
-    - name: Build app
-      run: |
-        npm run build:prod
-        npm run build:mac
-      env:
-        # Skip code signing in CI
-        CSC_IDENTITY_AUTO_DISCOVERY: false
-        
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          build/*.dmg
-          build/*.zip
-        body: |
-          ## What's New
-          
-          ### Features
-          - Add your release notes here
-          
-          ### Bug Fixes
-          - List any bug fixes
-          
-          ### Installation
-          
-          **macOS:**
-          1. Download the `.dmg` file below
-          2. Right-click the app and select "Open" to bypass security warning
-          
-          **Alternative:** Install via Homebrew: `brew install --cask i-cant-code`
-          
-          ---
-          
-          **System Requirements:**
-          - macOS 10.15+ 
-          - Ollama installed (The Mistral model will be downloaded automatically)
-          
-          **Need help?** Check our [installation guide](https://github.com/danrublop/I-can-t-code-translator#readme)
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Pull the section for this version out of CHANGELOG.md (everything between
+          # "## [VERSION]" and the next "## [" heading).
+          awk -v v="$VERSION" '
+            /^## \[/ { if (p) exit; if ($0 ~ "^## \\[" v "\\]") { p=1; print; next } }
+            p { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "Llamas Remote $VERSION" > RELEASE_NOTES.md
+          fi
+          echo "----- release notes -----"; cat RELEASE_NOTES.md
+
+      # Builds the universal DMG + ZIP and PUBLISHES them (plus latest-mac.yml, which
+      # electron-updater needs) to the GitHub release for this tag.
+      #
+      # Signing + notarization activate automatically when the secrets below are present;
+      # without them the build is unsigned (as before) and the notarize hook no-ops, so this
+      # never breaks — it just isn't Gatekeeper-clean or auto-updatable until the secrets exist.
+      - name: Build and publish
+        run: npm run release:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Developer ID Application cert exported as base64-encoded .p12 + its password.
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          # Apple notary credentials (consumed by build-resources/notarize.js).
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Set release notes from CHANGELOG
+        run: gh release edit "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
