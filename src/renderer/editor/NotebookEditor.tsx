@@ -13,9 +13,11 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor, EditorContent, ReactNodeViewRenderer, type Editor } from '@tiptap/react';
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { AiBlock } from './ai-block';
 import { AiBlockView } from './ai-block-view';
-import { notebookExtensions } from './extensions';
+import { CodeBlockView } from './code-block-view';
+import { notebookExtensions, lowlight } from './extensions';
 import { markdownToDoc } from './reconstruct';
 import { setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown, collectAiBlocks } from './doc-helpers';
 import { mergeCommands, filterCommands, type SlashCommand } from '../../main/services/presets/slash-commands';
@@ -40,6 +42,14 @@ const AiBlockWithView = AiBlock.extend({
     return ReactNodeViewRenderer(AiBlockView);
   },
 });
+
+// Code block with a React NodeView (in-block language dropdown). Extend BEFORE configure so
+// the lowlight instance is preserved; reuses the shared lowlight from extensions.ts.
+const CodeBlockWithView = CodeBlockLowlight.extend({
+  addNodeView() {
+    return ReactNodeViewRenderer(CodeBlockView);
+  },
+}).configure({ lowlight });
 
 export interface NotebookEditorProps {
   /**
@@ -117,7 +127,7 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCom
     // One shared schema for the live editor + the headless parse/serialize paths, with the
     // React NodeView spliced in for the AI block. Reconstruct AI blocks from the sidecar on
     // load (their anchors don't survive a plain markdown parse — see reconstruct.ts).
-    extensions: notebookExtensions({ aiBlock: AiBlockWithView }),
+    extensions: notebookExtensions({ aiBlock: AiBlockWithView, codeBlock: CodeBlockWithView }),
     content: initialContent,
     onUpdate: ({ editor }) => {
       if (onChangeRef.current) {

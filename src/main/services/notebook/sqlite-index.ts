@@ -25,10 +25,15 @@ const CREATE_ENTRIES = `
     image_path TEXT,
     pinned INTEGER NOT NULL DEFAULT 0,
     indexed_mtime_ms REAL NOT NULL DEFAULT 0,
-    tombstoned INTEGER NOT NULL DEFAULT 0
+    tombstoned INTEGER NOT NULL DEFAULT 0,
+    tombstoned_at_ms REAL NOT NULL DEFAULT 0
   )`;
 
 const CREATE_FTS = `CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(id UNINDEXED, body, tags)`;
+
+// Backs the sidebar list()/allRows scan (filter tombstoned, order pinned then newest) so
+// returning ALL live notes stays cheap without a row cap.
+const CREATE_LIST_INDEX = `CREATE INDEX IF NOT EXISTS idx_entries_list ON entries(tombstoned, pinned DESC, created_at DESC)`;
 
 function stripHtml(s: string): string {
   return s.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
@@ -48,6 +53,7 @@ export class SqliteNotebookIndex implements NotebookIndex {
     this.db.prepare(CREATE_ENTRIES).run();
     this.db.prepare(CREATE_FTS).run();
     this.migrate();
+    this.db.prepare(CREATE_LIST_INDEX).run();
   }
 
   // Add any columns missing from an older `entries` table (CREATE TABLE IF NOT EXISTS
@@ -68,23 +74,32 @@ export class SqliteNotebookIndex implements NotebookIndex {
     ensure('pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
     ensure('indexed_mtime_ms', 'indexed_mtime_ms REAL NOT NULL DEFAULT 0');
     ensure('tombstoned', 'tombstoned INTEGER NOT NULL DEFAULT 0');
+    ensure('tombstoned_at_ms', 'tombstoned_at_ms REAL NOT NULL DEFAULT 0');
   }
 
   allRows(): IndexRow[] {
     const rows = this.db
-      .prepare('SELECT id, tags, indexed_mtime_ms AS m, tombstoned FROM entries')
-      .all() as Array<{ id: string; tags: string; m: number; tombstoned: number }>;
-    return rows.map((r) => ({ id: r.id, tags: safeParseTags(r.tags), indexedMtimeMs: r.m, tombstoned: r.tombstoned === 1 }));
+      .prepare('SELECT id, tags, indexed_mtime_ms AS m, tombstoned, tombstoned_at_ms AS tat FROM entries')
+      .all() as Array<{ id: string; tags: string; m: number; tombstoned: number; tat: number }>;
+    return rows.map((r) => ({
+      id: r.id,
+      tags: safeParseTags(r.tags),
+      indexedMtimeMs: r.m,
+      tombstoned: r.tombstoned === 1,
+      // 0 means "unknown / never recorded" — leave it undefined so reconcile treats it as a
+      // legacy tombstone (revive) rather than a tombstone at the epoch.
+      tombstonedAtMs: r.tat > 0 ? r.tat : undefined,
+    }));
   }
 
   upsert(row: IndexUpsert): void {
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO entries (id, title, body, tags, model, source_app, source_kind, created_at, image_path, pinned, indexed_mtime_ms, tombstoned)
-           VALUES (@id, @title, @body, @tags, @model, @source_app, @source_kind, @created_at, @image_path, COALESCE(@pinned, 0), @mtime, 0)
+          `INSERT INTO entries (id, title, body, tags, model, source_app, source_kind, created_at, image_path, pinned, indexed_mtime_ms, tombstoned, tombstoned_at_ms)
+           VALUES (@id, @title, @body, @tags, @model, @source_app, @source_kind, @created_at, @image_path, COALESCE(@pinned, 0), @mtime, 0, 0)
            ON CONFLICT(id) DO UPDATE SET
-             body=@body, tags=@tags, indexed_mtime_ms=@mtime, tombstoned=0,
+             body=@body, tags=@tags, indexed_mtime_ms=@mtime, tombstoned=0, tombstoned_at_ms=0,
              title=COALESCE(@title, entries.title),
              pinned=COALESCE(@pinned, entries.pinned),
              model=COALESCE(@model, entries.model),
@@ -114,7 +129,10 @@ export class SqliteNotebookIndex implements NotebookIndex {
 
   tombstone(id: string): void {
     const tx = this.db.transaction(() => {
-      this.db.prepare('UPDATE entries SET tombstoned = 1 WHERE id = ?').run(id);
+      // Record WHEN we hid the row. Soft-delete leaves the .md on disk during the undo
+      // window, so reconcile compares this against the file's mtime to avoid resurrecting a
+      // note whose file simply hasn't been removed yet (see reconcileEntry).
+      this.db.prepare('UPDATE entries SET tombstoned = 1, tombstoned_at_ms = ? WHERE id = ?').run(Date.now(), id);
       this.db.prepare('DELETE FROM entries_fts WHERE id = ?').run(id);
     });
     tx();
@@ -126,7 +144,7 @@ export class SqliteNotebookIndex implements NotebookIndex {
     const tx = this.db.transaction(() => {
       const row = this.db.prepare('SELECT body, tags FROM entries WHERE id = ?').get(id) as { body: string; tags: string } | undefined;
       if (!row) return;
-      this.db.prepare('UPDATE entries SET tombstoned = 0 WHERE id = ?').run(id);
+      this.db.prepare('UPDATE entries SET tombstoned = 0, tombstoned_at_ms = 0 WHERE id = ?').run(id);
       this.db.prepare('DELETE FROM entries_fts WHERE id = ?').run(id);
       this.db.prepare('INSERT INTO entries_fts (id, body, tags) VALUES (?, ?, ?)').run(id, row.body, safeParseTags(row.tags).join(' '));
     });
@@ -151,11 +169,15 @@ export class SqliteNotebookIndex implements NotebookIndex {
   }
 
   list(): NoteSummary[] {
+    // No row cap: this backs the whole sidebar/note tree + folder counts + the search
+    // title-map, so every live note must be returned. Past a fixed LIMIT, overflow notes
+    // silently vanished from the UI even though their .md files were intact. (idx_entries_list
+    // keeps this ordered scan cheap; the real search path stays capped in search().)
     const rows = this.db
       .prepare(
         `SELECT id, title, body, source_app AS sourceApp, model, image_path AS imagePath, pinned, created_at AS createdAt
          FROM entries WHERE tombstoned = 0
-         ORDER BY pinned DESC, created_at DESC LIMIT 500`,
+         ORDER BY pinned DESC, created_at DESC`,
       )
       .all() as Array<{ id: string; title: string | null; body: string; sourceApp: string | null; model: string | null; imagePath: string | null; pinned: number; createdAt: string | null }>;
     return rows.map((r) => ({

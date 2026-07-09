@@ -5,6 +5,7 @@ import { readFileSync } from 'fs';
 import { extname } from 'path';
 import type { LlmClient } from '../notch/notch-controller';
 import { readStreamErrorMessage } from './stream-error';
+import { withRetry } from './retry';
 
 /** Anthropic message content: text string, or a text+image block array when an image is attached. */
 function buildContent(prompt: string, imagePath?: string): unknown {
@@ -25,21 +26,25 @@ export class AnthropicLlmClient implements LlmClient {
     const key = this.getKey();
     if (!key) throw new Error('No Anthropic API key — add one in Settings.');
     // Per-model output ceiling. 4096 silently truncated long answers; these are the real caps.
-    // Haiku 3.5 maxes at 8192; Sonnet 4.x streams up to 64k. A single flat value would have to
-    // stay ≤ the lowest model's cap (8192) or the API 400s, so key it off the id.
-    // ponytail: covers the two curated cloud models (see multi-llm-client CLOUD_MODELS);
-    // a newly-added low-ceiling Anthropic model would need adding here.
-    const maxTokens = /haiku/i.test(opts.model) ? 8192 : 64000;
+    // Haiku 4.5 streams up to 64k output (the retired Haiku 3.5 capped at 8192); Sonnet 4.x
+    // streams up to 64k. Both curated cloud models (see multi-llm-client CLOUD_MODELS) now
+    // support 64k, so a flat 64000 is safe. A newly-added low-ceiling Anthropic model (e.g. a
+    // future 8192-cap tier) would 400 above its cap and need special-casing here.
+    const maxTokens = 64000;
     try {
-      const res = await axios.post(
-        'https://api.anthropic.com/v1/messages',
-        { model: opts.model, max_tokens: maxTokens, stream: true, messages: [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }] },
-        {
-          headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-          responseType: 'stream',
-          timeout: 120000,
-          signal: opts.signal,
-        },
+      // Retry only the request-establishment call — never the stream read below (see retry.ts).
+      const res = await withRetry(
+        () => axios.post(
+          'https://api.anthropic.com/v1/messages',
+          { model: opts.model, max_tokens: maxTokens, stream: true, messages: [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }] },
+          {
+            headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            responseType: 'stream',
+            timeout: 120000,
+            signal: opts.signal,
+          },
+        ),
+        { signal: opts.signal },
       );
       const stream = res.data;
       return await new Promise<string>((resolve, reject) => {

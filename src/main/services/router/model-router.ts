@@ -36,7 +36,9 @@ const CLOUD_VISION = new Set([
   'openai/gpt-4o',
   'openai/gpt-4o-mini',
   'anthropic/claude-sonnet-4-5',
-  'anthropic/claude-3-5-haiku-latest',
+  // Haiku 4.5 accepts image input (standard-resolution vision tier). The retired
+  // claude-3-5-haiku was text-only and was wrongly listed here.
+  'anthropic/claude-haiku-4-5',
 ]);
 const LOCAL_VISION_HINTS = ['llava', 'bakllava', 'vision', 'moondream', 'minicpm-v', 'qwen2-vl', 'qwen2.5vl'];
 

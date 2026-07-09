@@ -107,6 +107,12 @@ export function parseEntry(text: string): ParsedFile | null {
 }
 
 export class MarkdownStore {
+  // Cache of the previous listDiskEntries() scan, keyed by filename → { mtimeMs, entry }.
+  // Lets the scan go stat-first: a file whose mtime is unchanged since we last read it is
+  // returned from cache without a fresh readFileSync + frontmatter parse. Without this,
+  // every focus-resync re-read and re-parsed every note body on the main thread.
+  private scanCache = new Map<string, { mtimeMs: number; entry: DiskEntry }>();
+
   constructor(private readonly dir: string) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }
@@ -168,10 +174,17 @@ export class MarkdownStore {
     return parseEntry(readFileSync(path, 'utf8'));
   }
 
-  /** List every valid `.md` entry on disk as a DiskEntry (id, body, tags, mtime). */
+  /** List every valid `.md` entry on disk as a DiskEntry (id, body, tags, mtime).
+   *  Stat-first: each file is stat()'d cheaply, and only files that are new or whose mtime
+   *  changed since the last scan are read + parsed; unchanged files reuse the cached parse
+   *  (identical DiskEntry, so reconcile reaches the same outcome). */
   listDiskEntries(): DiskEntry[] {
-    if (!existsSync(this.dir)) return [];
+    if (!existsSync(this.dir)) {
+      this.scanCache.clear();
+      return [];
+    }
     const out: DiskEntry[] = [];
+    const nextCache = new Map<string, { mtimeMs: number; entry: DiskEntry }>();
     for (const file of readdirSync(this.dir)) {
       if (!file.endsWith('.md')) continue;
       const full = join(this.dir, file);
@@ -179,16 +192,27 @@ export class MarkdownStore {
       // the whole reconcile and hide every other note.
       try {
         const mtimeMs = statSync(full).mtimeMs;
+        const cached = this.scanCache.get(file);
+        if (cached && cached.mtimeMs === mtimeMs) {
+          // Unchanged since the last scan — skip the readFileSync + parse entirely.
+          out.push(cached.entry);
+          nextCache.set(file, cached);
+          continue;
+        }
         const parsed = parseEntry(readFileSync(full, 'utf8'));
         if (!parsed) {
           // File is present but malformed. If its basename is a valid entry id, surface it as
           // an unparseable entry so reconcile keeps the existing row instead of tombstoning a
           // note whose file (with content) still sits on disk.
           const id = file.slice(0, -3);
-          if (isValidEntryId(id)) out.push({ id, body: '', frontmatterTags: [], mtimeMs, unparseable: true });
+          if (isValidEntryId(id)) {
+            const entry: DiskEntry = { id, body: '', frontmatterTags: [], mtimeMs, unparseable: true };
+            out.push(entry);
+            nextCache.set(file, { mtimeMs, entry });
+          }
           continue;
         }
-        out.push({
+        const entry: DiskEntry = {
           id: parsed.id,
           body: parsed.body,
           frontmatterTags: parsed.tags,
@@ -202,11 +226,15 @@ export class MarkdownStore {
             imagePath: parsed.imagePath || undefined,
             pinned: parsed.pinned,
           },
-        });
+        };
+        out.push(entry);
+        nextCache.set(file, { mtimeMs, entry });
       } catch (e) {
         console.warn(`listDiskEntries: skipping unreadable file ${file}:`, e);
       }
     }
+    // Swap in the fresh cache so deleted files drop out and don't leak.
+    this.scanCache = nextCache;
     return out;
   }
 }

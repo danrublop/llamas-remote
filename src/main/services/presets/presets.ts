@@ -46,8 +46,13 @@ export interface RenderVars {
  * whitespace left by an empty token at the end.
  */
 export function renderPrompt(template: string, vars: RenderVars): string {
-  const out = template
+  // Clean up per-line trailing whitespace on the TEMPLATE only — never across the
+  // interpolated user content, which would strip Markdown hard line-breaks (trailing
+  // double-space) out of the captured selection. Then trimEnd the final result to drop
+  // any dangling whitespace/newlines left by an empty token at the end.
+  return template
+    .replace(/[ \t]+$/gm, '')
     .replace(/\{selection\}/g, vars.selection ?? '')
-    .replace(/\{image\}/g, vars.image ?? '');
-  return out.replace(/[ \t]+$/gm, '').trimEnd();
+    .replace(/\{image\}/g, vars.image ?? '')
+    .trimEnd();
 }

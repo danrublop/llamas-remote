@@ -18,6 +18,7 @@ interface Row {
   pinned: boolean;
   mtimeMs: number;
   tombstoned: boolean;
+  tombstonedAtMs?: number;
 }
 
 function stripHtml(s: string): string {
@@ -33,7 +34,7 @@ export class MemoryNotebookIndex implements NotebookIndex {
   private rows = new Map<string, Row>();
 
   allRows(): IndexRow[] {
-    return [...this.rows.entries()].map(([id, r]) => ({ id, tags: r.tags, indexedMtimeMs: r.mtimeMs, tombstoned: r.tombstoned }));
+    return [...this.rows.entries()].map(([id, r]) => ({ id, tags: r.tags, indexedMtimeMs: r.mtimeMs, tombstoned: r.tombstoned, tombstonedAtMs: r.tombstonedAtMs }));
   }
 
   upsert(row: IndexUpsert): void {
@@ -49,17 +50,18 @@ export class MemoryNotebookIndex implements NotebookIndex {
       pinned: row.pinned ?? prev?.pinned ?? false,
       mtimeMs: row.indexedMtimeMs,
       tombstoned: false,
+      tombstonedAtMs: undefined,
     });
   }
 
   tombstone(id: string): void {
     const r = this.rows.get(id);
-    if (r) r.tombstoned = true;
+    if (r) { r.tombstoned = true; r.tombstonedAtMs = Date.now(); }
   }
 
   untombstone(id: string): void {
     const r = this.rows.get(id);
-    if (r) r.tombstoned = false;
+    if (r) { r.tombstoned = false; r.tombstonedAtMs = undefined; }
   }
 
   search(query: string): SearchHit[] {
@@ -75,7 +77,6 @@ export class MemoryNotebookIndex implements NotebookIndex {
     return [...this.rows.entries()]
       .filter(([, r]) => !r.tombstoned)
       .sort((a, b) => (Number(b[1].pinned) - Number(a[1].pinned)) || (b[1].createdAt ?? '').localeCompare(a[1].createdAt ?? ''))
-      .slice(0, 500)
       .map(([id, r]) => ({
         id,
         title: deriveTitle(r.title, r.body),

@@ -79,19 +79,11 @@ const Ico = {
   sidebar: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" /></svg>,
   search: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>,
   code: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>,
+  table: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" /><line x1="15" y1="3" x2="15" y2="21" /></svg>,
   highlight: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l-4 4v3h3l4-4" /><path d="M13 7l4 4" /><path d="M20.5 6.5a2.1 2.1 0 0 0-3-3L9 12l3 3z" /></svg>,
   moon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>,
   sun: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="4" /><line x1="12" y1="20" x2="12" y2="22" /><line x1="4.2" y1="4.2" x2="5.6" y2="5.6" /><line x1="18.4" y1="18.4" x2="19.8" y2="19.8" /><line x1="2" y1="12" x2="4" y2="12" /><line x1="20" y1="12" x2="22" y2="12" /><line x1="4.2" y1="19.8" x2="5.6" y2="18.4" /><line x1="18.4" y1="5.6" x2="19.8" y2="4.2" /></svg>,
 };
-
-// Languages offered by the code-block dropdown (all bundled in lowlight's `common`).
-const CODE_LANGS: Array<{ id: string; label: string }> = [
-  { id: 'java', label: 'Java' }, { id: 'javascript', label: 'JavaScript' }, { id: 'typescript', label: 'TypeScript' },
-  { id: 'python', label: 'Python' }, { id: 'c', label: 'C' }, { id: 'cpp', label: 'C++' }, { id: 'csharp', label: 'C#' },
-  { id: 'go', label: 'Go' }, { id: 'rust', label: 'Rust' }, { id: 'ruby', label: 'Ruby' }, { id: 'php', label: 'PHP' },
-  { id: 'swift', label: 'Swift' }, { id: 'kotlin', label: 'Kotlin' }, { id: 'sql', label: 'SQL' }, { id: 'bash', label: 'Shell' },
-  { id: 'json', label: 'JSON' }, { id: 'xml', label: 'HTML/XML' }, { id: 'css', label: 'CSS' }, { id: 'plaintext', label: 'Plain' },
-];
 
 const countWords = (text: string): number => {
   const m = text.trim().match(/\S+/g);
@@ -144,7 +136,10 @@ function Notebook() {
   const [editor, setEditor] = useState<Editor | null>(null); // live TipTap instance (for color/code toolbar)
   const [textColor, setTextColor] = useState('#26251e');
   const [hlColor, setHlColor] = useState('#ffe37a');
-  const [codeLang, setCodeLang] = useState('java');
+  // Table grid picker (Google-Docs style): hover an N×M region, click to insert.
+  const [tableMenuOpen, setTableMenuOpen] = useState(false);
+  const [tableHover, setTableHover] = useState({ r: 0, c: 0 });
+  const tableBtnRef = useRef<HTMLDivElement>(null);
   const liveMarkdown = useRef(''); // latest editor markdown, for copy/export/word count
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -313,6 +308,16 @@ function Notebook() {
   // Flush a pending title rename if the window closes before its debounce fires.
   useEffect(() => flushRename, [flushRename]);
 
+  // Close the table grid picker on an outside click.
+  useEffect(() => {
+    if (!tableMenuOpen) return;
+    function onDown(e: MouseEvent) {
+      if (tableBtnRef.current && !tableBtnRef.current.contains(e.target as Node)) setTableMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [tableMenuOpen]);
+
   // External edits to the on-disk .md files aren't noticed until relaunch — re-sync from disk on
   // window focus so returning to the app picks them up. Debounced, and skipped while a notch
   // answer is streaming so we don't fight an in-progress write.
@@ -400,8 +405,13 @@ function Notebook() {
   function applyColor(hex: string) { setTextColor(hex); editor?.chain().focus().setColor(hex).run(); }
   function toggleHighlight() { editor?.chain().focus().toggleHighlight({ color: hlColor }).run(); }
   function applyHlColor(hex: string) { setHlColor(hex); editor?.chain().focus().setHighlight({ color: hex }).run(); }
-  function toggleCode() { editor?.chain().focus().toggleCodeBlock().updateAttributes('codeBlock', { language: codeLang }).run(); }
-  function applyCodeLang(lang: string) { setCodeLang(lang); editor?.chain().focus().updateAttributes('codeBlock', { language: lang }).run(); }
+  // Language is picked on the block itself (in-block dropdown, see code-block-view); the
+  // toolbar button just toggles the block into/out of code.
+  function toggleCode() { editor?.chain().focus().toggleCodeBlock().run(); }
+  function insertTable(rows: number, cols: number) {
+    editor?.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run();
+    setTableMenuOpen(false);
+  }
 
   function closeSearch() { setSearchOpen(false); setQuery(''); setResults(null); }
 
@@ -738,10 +748,27 @@ function Notebook() {
           {editor && (
             <>
               <span className="sep" />
-              <button className={`ico${editor.isActive('codeBlock') ? ' active' : ''}`} onClick={toggleCode} title="Code block (syntax highlighted)">{Ico.code}</button>
-              <select className="tb-lang" value={codeLang} onChange={(e) => applyCodeLang(e.target.value)} title="Code language">
-                {CODE_LANGS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
-              </select>
+              <button className={`ico${editor.isActive('codeBlock') ? ' active' : ''}`} onClick={toggleCode} title="Code block (pick language on the block)">{Ico.code}</button>
+              <div className="tb-table" ref={tableBtnRef}>
+                <button className={`ico${editor.isActive('table') ? ' active' : ''}`} onClick={() => setTableMenuOpen((v) => !v)} title="Insert table">{Ico.table}</button>
+                {tableMenuOpen && (
+                  <div className="grid-pop" onMouseLeave={() => setTableHover({ r: 0, c: 0 })}>
+                    <div className="grid">
+                      {Array.from({ length: 6 }).map((_, r) =>
+                        Array.from({ length: 8 }).map((_, c) => (
+                          <span
+                            key={`${r}-${c}`}
+                            className={`gcell${r <= tableHover.r && c <= tableHover.c ? ' on' : ''}`}
+                            onMouseEnter={() => setTableHover({ r, c })}
+                            onMouseDown={(e) => { e.preventDefault(); insertTable(r + 1, c + 1); }}
+                          />
+                        ))
+                      )}
+                    </div>
+                    <div className="grid-label">{tableHover.c + 1} × {tableHover.r + 1}</div>
+                  </div>
+                )}
+              </div>
               <label className="color-btn" title="Text color">
                 <span className="color-dot" style={{ background: textColor }} />
                 <input type="color" value={textColor} onChange={(e) => applyColor(e.target.value)} />

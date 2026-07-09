@@ -593,9 +593,11 @@ class MainProcess {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         // A cancelled run was superseded/closed deliberately — don't flash an error.
-        // Match the explicit 'cancelled' marker AND any stream-level cancel that landed
-        // after the signal aborted (axios surfaces those as "...stream error: canceled").
-        const wasCancelled = message === 'cancelled' || signal.aborted || /cancell?ed/i.test(message);
+        // Our clients throw the literal 'cancelled' marker, and `signal.aborted` is true for
+        // any cancel WE initiated. We deliberately do NOT text-match the message: a provider
+        // stream that reports "...canceled" while signal.aborted is false is a genuine failure
+        // (e.g. an ECONNRESET surfaced as "canceled") and must reach the user.
+        const wasCancelled = message === 'cancelled' || signal.aborted;
         if (!wasCancelled) {
           session.emit(runId, 'notebook:error', message);
           if (req.autoOpen !== false) this.showNotebook();
@@ -635,6 +637,12 @@ class MainProcess {
         // just because the panel opened. The hotkey path (handleNotchHotkey) allows the
         // clipboard fallback because it's an explicit user action.
         const r = await this.captureProvider.captureSelection({ allowClipboardFallback: false });
+        // Passive AX read comes back empty when Accessibility isn't granted — the same silent
+        // null the hotkey path guards against. Surface the permission prompt (once/session) so
+        // hover-open isn't just blank with no explanation. Stays passive: no synthetic Cmd+C.
+        if (r.text.trim().length === 0 && process.platform === 'darwin' && !isAccessibilityTrusted()) {
+          this.promptAccessibility();
+        }
         return { selection: r.text, sourceApp: r.sourceApp, empty: r.text.trim().length === 0 };
       } catch (e) {
         console.warn('panel:capture failed:', e);
@@ -689,10 +697,12 @@ class MainProcess {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         // Suppress the error only when the run was deliberately cancelled (superseded/closed).
-        // Match the same signals the panel path does — an exact 'cancelled', an aborted
-        // signal, or a provider stream-level "...canceled". emit() itself also drops the
-        // event if this run was superseded, so a re-run's fresh block is never marked errored.
-        const wasCancelled = message === 'cancelled' || signal.aborted || /cancell?ed/i.test(message);
+        // Match the same signals the panel path does — an exact 'cancelled' marker or an
+        // aborted signal (both mean WE initiated the cancel). We deliberately do NOT text-match
+        // the message: a provider stream that reports "...canceled" while the signal never
+        // aborted is a real failure and must surface. emit() itself also drops the event if
+        // this run was superseded, so a re-run's fresh block is never marked errored.
+        const wasCancelled = message === 'cancelled' || signal.aborted;
         if (!wasCancelled) gen.emit(blockId, runId, 'notebook:gen-error', { blockId, message });
         return { ok: false, error: message };
       } finally {

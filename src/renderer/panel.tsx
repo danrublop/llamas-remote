@@ -15,7 +15,7 @@ import ArrowUpRight from 'lucide-react/dist/esm/icons/arrow-up-right';
 import Check from 'lucide-react/dist/esm/icons/check';
 import Copy from 'lucide-react/dist/esm/icons/copy';
 import X from 'lucide-react/dist/esm/icons/x';
-import { decideEscapeAction, decideBlurAction, reconcilePick, draftAfter, statusAfterDismiss } from './panel-dismiss';
+import { decideEscapeAction, decideBlurAction, reconcilePick, draftAfter, statusAfterDismiss, classifyFireOutcome } from './panel-dismiss';
 import './panel.css';
 
 interface PanelQueryRequest {
@@ -129,6 +129,10 @@ function Panel() {
   // True while a native picker/screenshot/OCR is open — those blur the window legitimately
   // and must NOT trigger the window-blur dismiss.
   const captureInFlightRef = useRef(false);
+  // Monotonic id stamped on each fire(). When a query settles we compare it to the latest id
+  // and drop the result if a newer fire has since started (mirrors the server-side run-id guard),
+  // so a late/superseded result can't paint over the run the panel is now showing.
+  const fireRunId = useRef(0);
   expandedRef.current = expanded;
   selectionRef.current = selection;
 
@@ -253,12 +257,26 @@ function Panel() {
     setError('');
     setAnswer('');
     setStatus('running');
-    const res = await window.llamasAPI.runQuery({
-      ...req,
-      userSelectedModel: model || undefined,
-      attachments: attachments.length ? attachments.map((a) => a.path) : undefined,
-    });
-    if (res.ok) {
+    const myRunId = ++fireRunId.current;
+    let res: PanelQueryResult;
+    try {
+      res = await window.llamasAPI.runQuery({
+        ...req,
+        userSelectedModel: model || undefined,
+        attachments: attachments.length ? attachments.map((a) => a.path) : undefined,
+      });
+    } catch (err) {
+      // The IPC invoke itself rejected (main threw before returning a result). Feed it through
+      // the same run-id guard as a synthetic failure so a hard reject surfaces an error instead
+      // of leaving the panel stuck on 'running' forever.
+      res = { ok: false, error: err instanceof Error ? err.message : 'Something went wrong' };
+    }
+    const outcome = classifyFireOutcome({ superseded: fireRunId.current !== myRunId, ok: res.ok, error: res.error });
+    // 'ignore' (a newer fire took over) and 'cancelled' (main deliberately superseded/closed
+    // this run and already suppressed its error) are both no-ops — the current owner of the UI
+    // state, a newer run or a fresh capture, keeps the status.
+    if (outcome === 'ignore' || outcome === 'cancelled') return;
+    if (outcome === 'success') {
       setAnswer(res.answer ?? '');
       setStatus('done');
       // The draft did its job — clear it so the next open starts fresh.

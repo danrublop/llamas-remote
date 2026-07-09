@@ -54,6 +54,14 @@ describe('isVisionCapable', () => {
     expect(isVisionCapable('openai/gpt-4o')).toBe(true);
     expect(isVisionCapable('openai/gpt-4o-mini')).toBe(true);
     expect(isVisionCapable('anthropic/claude-sonnet-4-5')).toBe(true);
+    // Haiku 4.5 accepts image input (standard-resolution vision tier).
+    expect(isVisionCapable('anthropic/claude-haiku-4-5')).toBe(true);
+  });
+
+  it('does not treat the retired text-only claude-3-5-haiku as vision-capable', () => {
+    // Regression: it was wrongly listed vision-capable and 404s besides. "haiku" in the id
+    // must not match a local vision hint either.
+    expect(isVisionCapable('anthropic/claude-3-5-haiku-latest')).toBe(false);
   });
 
   it('recognizes local vision tags by substring', () => {

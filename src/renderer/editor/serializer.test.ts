@@ -40,6 +40,19 @@ describe('markdown round-trip (md -> doc -> md identity)', () => {
     expect(mdToMd(md)).toContain('const x = 1;');
     expect(mdToMd(md).startsWith('```')).toBe(true);
   });
+
+  it('round-trips a GFM table (survives save/reload — no data loss)', () => {
+    const md = '| A | B |\n| --- | --- |\n| 1 | 2 |';
+    const out = mdToMd(md);
+    // A GFM pipe table with the header separator + the cell values must survive.
+    expect(out).toContain('| --- |');
+    expect(out).toContain('A');
+    expect(out).toContain('1');
+    // And it reloads as a real table node, not plain text.
+    const editor = new Editor({ extensions: notebookExtensions(), content: md, contentType: 'markdown' });
+    expect(JSON.stringify(editor.getJSON())).toContain('"table"');
+    editor.destroy();
+  });
 });
 
 describe('AiBlock serialization', () => {

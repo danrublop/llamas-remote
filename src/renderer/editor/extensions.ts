@@ -11,10 +11,15 @@ import { TextStyle, Color } from '@tiptap/extension-text-style';
 import { Highlight } from '@tiptap/extension-highlight';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { createLowlight, common } from 'lowlight';
+import { Table } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableHeader } from '@tiptap/extension-table-header';
+import { TableCell } from '@tiptap/extension-table-cell';
 import { AiBlock } from './ai-block';
 
 // Syntax highlighting for code blocks — `common` bundles ~37 languages (java, js, python, …).
-const lowlight = createLowlight(common);
+// Exported so the live editor can build a NodeView variant that reuses this same instance.
+export const lowlight = createLowlight(common);
 
 // Markdown has no syntax for text color / highlight, so we serialize those marks to inline
 // HTML (`<span style="color">`, `<mark style="background-color">`) — which the marks'
@@ -58,7 +63,7 @@ export const HighlightMd = Highlight.extend({
  * `opts.aiBlock` lets the live editor pass the React-NodeView variant of the AI block while
  * the headless parse/serialize paths use the plain node — same schema, so JSON is compatible.
  */
-export function notebookExtensions(opts?: { aiBlock?: AnyExtension }): AnyExtension[] {
+export function notebookExtensions(opts?: { aiBlock?: AnyExtension; codeBlock?: AnyExtension }): AnyExtension[] {
   return [
     StarterKit.configure({ codeBlock: false, link: { openOnClick: false } }),
     Markdown,
@@ -66,6 +71,12 @@ export function notebookExtensions(opts?: { aiBlock?: AnyExtension }): AnyExtens
     TextStyleMd,
     Color,
     HighlightMd.configure({ multicolor: true }),
-    CodeBlockLowlight.configure({ lowlight }),
+    // Live editor passes a NodeView variant (in-block language dropdown); headless paths use
+    // the plain node so markdown round-tripping is unchanged.
+    opts?.codeBlock ?? CodeBlockLowlight.configure({ lowlight }),
+    Table.configure({ resizable: true }),
+    TableRow,
+    TableHeader,
+    TableCell,
   ];
 }
