@@ -22,7 +22,7 @@ class FakeIndex implements NotebookIndex {
   }
   upsert(row: IndexUpsert): void {
     const prev = this.rows.get(row.id);
-    this.rows.set(row.id, { title: row.title ?? prev?.title, body: row.body, tags: row.tags, pinned: row.pinned ?? prev?.pinned ?? false, mtime: row.indexedMtimeMs, tombstoned: false });
+    this.rows.set(row.id, { title: row.title ?? prev?.title, body: row.body, tags: row.tags, pinned: row.pinned ?? prev?.pinned ?? false, mtime: row.indexedMtimeMs, tombstoned: prev?.tombstoned ?? false });
   }
   tombstone(id: string): void {
     const r = this.rows.get(id);
@@ -144,6 +144,19 @@ describe('NotebookStore', () => {
     store.restore('e4c');
     expect(store.list().map((n) => n.id)).toContain('e4c'); // back in the list
     expect(store.search('undo').map((h) => h.id)).toEqual(['e4c']);
+  });
+
+  // Regression: the editor's flush-on-unmount can fire updateBody AFTER a delete tombstones the
+  // note. That late edit must not resurrect it (else it flickers back, then loses those edits
+  // when the pending-delete timer removes the file).
+  it('updateBody after hide() does not resurrect a soft-deleted note', () => {
+    store.save(makeEntry({ id: 'e4d', body: 'deleting', tags: [], model: 'm', sourceApp: 'A' }));
+
+    store.hide('e4d');
+    store.updateBody('e4d', 'a late unmount-flush edit'); // must NOT un-hide
+
+    expect(store.list().map((n) => n.id)).not.toContain('e4d');
+    expect(store.search('late')).toHaveLength(0);
   });
 
   it('syncFromDisk inserts a file that appeared on disk outside the app', () => {
