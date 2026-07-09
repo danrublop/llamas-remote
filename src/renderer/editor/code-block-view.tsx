@@ -11,6 +11,10 @@ import { CODE_LANGS } from './code-langs';
 
 export function CodeBlockView({ node, updateAttributes }: NodeViewProps) {
   const lang = String(node.attrs.language || 'plaintext');
+  // A persisted / model-authored fence can carry a language not in CODE_LANGS (e.g. yaml,
+  // haskell). Surface it as its own option so the controlled select shows it instead of going
+  // blank; lowlight still highlights whatever the fence declared regardless of the dropdown.
+  const known = CODE_LANGS.some((l) => l.id === lang);
   return (
     <NodeViewWrapper className="cb">
       <select
@@ -22,6 +26,7 @@ export function CodeBlockView({ node, updateAttributes }: NodeViewProps) {
         onChange={(e) => updateAttributes({ language: e.target.value })}
         title="Code language"
       >
+        {!known && <option value={lang}>{lang}</option>}
         {CODE_LANGS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
       </select>
       {/* as="code" is correct; NodeViewContent's `as` is NoInfer-pinned to 'div', so cast. */}

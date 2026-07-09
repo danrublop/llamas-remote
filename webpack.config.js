@@ -37,15 +37,18 @@ module.exports = {
     ]
   },
   plugins: [
+    // dev needs 'unsafe-eval' for the eval-cheap-module-source-map devtool below.
     new HtmlWebpackPlugin({
       template: './src/renderer/panel.html',
       filename: 'panel.html',
-      chunks: ['panel']
+      chunks: ['panel'],
+      templateParameters: { cspScriptSrc: "'self' 'unsafe-eval'" }
     }),
     new HtmlWebpackPlugin({
       template: './src/renderer/notebook.html',
       filename: 'notebook.html',
-      chunks: ['notebook']
+      chunks: ['notebook'],
+      templateParameters: { cspScriptSrc: "'self' 'unsafe-eval'" }
     }),
   ],
   // Dev-only config (prod packaging uses webpack.prod.config.js). Full 'source-map' emits

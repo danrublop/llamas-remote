@@ -38,15 +38,19 @@ module.exports = {
     ]
   },
   plugins: [
+    // prod ships no 'unsafe-eval': production mode uses no eval-based devtool, so the
+    // released CSP is script-src 'self' only.
     new HtmlWebpackPlugin({
       template: './src/renderer/panel.html',
       filename: 'panel.html',
-      chunks: ['panel']
+      chunks: ['panel'],
+      templateParameters: { cspScriptSrc: "'self'" }
     }),
     new HtmlWebpackPlugin({
       template: './src/renderer/notebook.html',
       filename: 'notebook.html',
-      chunks: ['notebook']
+      chunks: ['notebook'],
+      templateParameters: { cspScriptSrc: "'self'" }
     })
   ],
   optimization: {

@@ -51,6 +51,33 @@ export const HighlightMd = Highlight.extend({
   },
 } as never);
 
+// @tiptap/markdown's built-in table serializer does NOT escape `|` inside cell content, so a
+// cell like `grep x | wc` silently loses everything after the pipe on the next save/reload
+// (the GFM parser reads the extra pipe as a column break and drops the overflow). We own the
+// whole table serialization here instead: one GFM row per table row, `\|` for literal pipes,
+// newlines collapsed to spaces (GFM cells are single-line). A Table-node renderMarkdown
+// REPLACES the built-in table handling (verified), so this is the single source of truth.
+// renderMarkdown receives a JSON node ({ type, attrs, content: [...] }), and renderChildren(n)
+// renders n.content — so we walk node.content (rows) → row.content (cells).
+type JsonNode = { type?: string; content?: JsonNode[] };
+const renderCell = (cell: JsonNode, renderChildren: (n: JsonNode) => string): string =>
+  (renderChildren(cell).trim().replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|')) || ' ';
+export const TableMd = Table.extend({
+  renderMarkdown(node: JsonNode, { renderChildren }: { renderChildren: (n: JsonNode) => string }) {
+    const rows: string[][] = [];
+    for (const row of node.content ?? []) {
+      rows.push((row.content ?? []).map((cell) => renderCell(cell, renderChildren)));
+    }
+    if (rows.length === 0) return '';
+    const cols = Math.max(...rows.map((r) => r.length));
+    const pad = (r: string[]) => { const c = [...r]; while (c.length < cols) c.push(' '); return c; };
+    const line = (r: string[]) => `| ${pad(r).join(' | ')} |`;
+    const sep = `| ${Array(cols).fill('---').join(' | ')} |`;
+    const [head, ...body] = rows;
+    return [line(head), sep, ...body.map(line)].join('\n');
+  },
+} as never).configure({ resizable: true });
+
 /**
  * Extensions for the notebook editor: rich text (StarterKit), Markdown serialization, the
  * custom AI block, text color / highlight, and syntax-highlighted code blocks.
@@ -74,7 +101,7 @@ export function notebookExtensions(opts?: { aiBlock?: AnyExtension; codeBlock?: 
     // Live editor passes a NodeView variant (in-block language dropdown); headless paths use
     // the plain node so markdown round-tripping is unchanged.
     opts?.codeBlock ?? CodeBlockLowlight.configure({ lowlight }),
-    Table.configure({ resizable: true }),
+    TableMd,
     TableRow,
     TableHeader,
     TableCell,
