@@ -30,12 +30,19 @@ function esc(value: string): string {
  * Serialize the tag list. Tags are user-editable, so a tag containing a comma, a bracket,
  * a quote, a newline, or leading/trailing whitespace would corrupt the bare comma-joined
  * flow list on round-trip (the reader splits on `,` and strips `[`/`]` before unescaping).
- * When any tag needs escaping we emit the whole array as strict JSON (`tags: ["a,b","c"]`),
+ * A tag that *looks like* a bare JSON literal (`2024`, `true`, `null`) is just as dangerous:
+ * written bare as `[2024]` the reader would JSON-decode it to a number/boolean and drop it.
+ * When any tag needs escaping we emit the whole array as strict JSON (`tags: ["2024","c"]`),
  * which parseEntry decodes atomically; otherwise we keep the readable bare form for the
  * common case (and for backward-compatible files written before this fix).
  */
+function jsonNonString(t: string): boolean {
+  // True when `t` would JSON-parse to a non-string (number/bool/null/array/object),
+  // e.g. "2024" -> 2024, "true" -> true. Such a tag must be quoted in the JSON form.
+  try { return typeof JSON.parse(t) !== 'string'; } catch { return false; }
+}
 function serializeTags(tags: readonly string[]): string {
-  const needsJson = tags.some((t) => /[,[\]"\n]/.test(t) || t.trim() !== t);
+  const needsJson = tags.some((t) => /[,[\]"\n]/.test(t) || t.trim() !== t || jsonNonString(t));
   if (needsJson) return JSON.stringify(tags);
   return `[${tags.map(esc).join(', ')}]`;
 }
@@ -118,7 +125,12 @@ export function parseEntry(text: string): ParsedFile | null {
       if (raw.startsWith('[') && raw.endsWith(']')) {
         try {
           const arr = JSON.parse(raw);
-          if (Array.isArray(arr)) parsed = arr.filter((t): t is string => typeof t === 'string');
+          // Only treat this as the strict-JSON form when EVERY element is a string.
+          // A legacy/bare numeric or boolean list like `[2024]` JSON-parses to `[2024]`
+          // (a number) — accepting it here and string-filtering would silently DROP the
+          // tag. Falling through instead recovers it as the string tag "2024" via the
+          // legacy split below.
+          if (Array.isArray(arr) && arr.every((t) => typeof t === 'string')) parsed = arr as string[];
         } catch { /* not JSON — legacy bare list below */ }
       }
       if (parsed) {
