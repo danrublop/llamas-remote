@@ -3,6 +3,11 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.0] - 2026-07-10
+
+### Added
+- **Section titles + outline panel.** A heading button in the editor toolbar turns the selected block into a section title, and a "Sections" panel on the right lists every heading in the note — click one to jump straight to it. Toggle the panel from the top-right outline button (state persists). Sections are plain Markdown headings, so they round-trip through the `.md` file.
+
 ## [1.8.1] - 2026-07-10
 
 ### Added

@@ -258,6 +258,19 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .toolbar .sep { width: 1px; height: 18px; background: var(--hairline); margin: 0 2px; }
 .toolbar .meta { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 0 4px; }
 
+/* ── Note layout: editor column + section-outline aside ── */
+.note-layout { flex: 1; display: flex; min-height: 0; }
+/* position:relative so the floating .toolbar anchors here (to the editor column, not over the outline) */
+.note-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.outline { flex: none; width: 220px; border-left: 1px solid var(--hairline); overflow-y: auto; padding: 14px 6px 40px; }
+.outline-head { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 0 10px 8px; }
+.outline-list { display: flex; flex-direction: column; }
+.outline-item { text-align: left; border: none; background: none; color: var(--ink-soft); cursor: pointer; font: inherit; font-size: 13px; line-height: 1.35; padding: 4px 10px; border-radius: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.outline-item:hover { background: var(--hairline-soft); color: var(--ink); }
+.outline-item.lvl2 { padding-left: 20px; }
+.outline-item.lvl3 { padding-left: 32px; font-size: 12.5px; }
+.outline-item.lvl4, .outline-item.lvl5, .outline-item.lvl6 { padding-left: 44px; font-size: 12.5px; }
+
 /* ── Editor: a centered reading column with full rich-text styling ── */
 .editor-wrap { flex: 1; position: relative; display: flex; flex-direction: column; min-height: 0; }
 .editor { flex: 1; min-height: 0; overflow-y: auto; padding: 18px var(--pad-x) 110px; font-size: 16.5px; line-height: 1.68; color: var(--ink); outline: none; caret-color: var(--accent); }

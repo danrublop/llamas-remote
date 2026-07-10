@@ -109,6 +109,10 @@ const Ico = {
   palette: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" /><circle cx="6.5" cy="12.5" r=".9" fill="currentColor" stroke="none" /><circle cx="8.5" cy="7.5" r=".9" fill="currentColor" stroke="none" /><circle cx="13.5" cy="6.5" r=".9" fill="currentColor" stroke="none" /><circle cx="17.5" cy="10.5" r=".9" fill="currentColor" stroke="none" /></svg>,
   highlight: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l-4 4v3h3l4-4" /><path d="M13 7l4 4" /><path d="M20.5 6.5a2.1 2.1 0 0 0-3-3L9 12l3 3z" /></svg>,
   spellcheck: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 8 8 12 16 4" /><path d="M3 18c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0" /></svg>,
+  // Lucide "heading" — the make-section-title button.
+  heading: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4v16" /><path d="M18 4v16" /><path d="M6 12h12" /></svg>,
+  // Section outline toggle (table-of-contents).
+  outline: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><circle cx="4" cy="6" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" /></svg>,
   moon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>,
   sun: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="4" /><line x1="12" y1="20" x2="12" y2="22" /><line x1="4.2" y1="4.2" x2="5.6" y2="5.6" /><line x1="18.4" y1="18.4" x2="19.8" y2="19.8" /><line x1="2" y1="12" x2="4" y2="12" /><line x1="20" y1="12" x2="22" y2="12" /><line x1="4.2" y1="19.8" x2="5.6" y2="18.4" /><line x1="18.4" y1="5.6" x2="19.8" y2="4.2" /></svg>,
 };
@@ -248,6 +252,7 @@ function Notebook() {
   const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); // where the last context menu opened
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('nb-theme') === 'dark' ? 'dark' : 'light'));
   const [view, setView] = useState<'notes' | 'settings'>('notes'); // right pane: editor / combined settings
+  const [outlineOpen, setOutlineOpen] = useState(localStorage.getItem('nb-outline') !== 'off'); // section outline panel
   const [image, setImage] = useState<string | null>(null); // capture data URL for the selected note
   const [words, setWords] = useState(0); // live word count
   const [toast, setToast] = useState<{ msg: string; undo?: () => void } | null>(null);
@@ -570,6 +575,16 @@ function Notebook() {
   const curSize = (editor && (editor.getAttributes('textStyle').fontSize as string | undefined)?.replace('px', '')) || size;
   const curColor = (editor && asHex(editor.getAttributes('textStyle').color)) || textColor;
   const curHl = (editor && asHex(editor.getAttributes('highlight').color)) || hlColor;
+  // Make the selected block a section title (H2). Toggles back to a paragraph if already one.
+  function toggleSection() { editor?.chain().focus().toggleHeading({ level: 2 }).run(); }
+  // Live section outline: every heading in the doc → click an item to jump to it. Cheap doc walk,
+  // recomputed each render (the toolbar already re-renders on every transaction, above).
+  const outline: { pos: number; level: number; text: string }[] = [];
+  if (editor) editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'heading') outline.push({ pos, level: node.attrs.level as number, text: node.textContent.trim() || 'Untitled section' });
+  });
+  function jumpToHeading(pos: number) { editor?.chain().focus().setTextSelection(pos + 1).scrollIntoView().run(); }
+  function toggleOutline() { setOutlineOpen((v) => { localStorage.setItem('nb-outline', v ? 'off' : 'on'); return !v; }); }
   function applyColor(hex: string) { setTextColor(hex); editor?.chain().focus().setColor(hex).run(); }
   // Toggle the red squiggle. spellcheck lives on the contenteditable DOM node, so drive it
   // directly on the editor's view; reapply whenever the editor remounts (note switch).
@@ -906,6 +921,7 @@ function Notebook() {
           </div>
           {view === 'notes' && streaming !== 'streaming' && (
             <div className="main-actions">
+              <button className={outlineOpen ? 'active' : ''} onClick={toggleOutline} title={outlineOpen ? 'Hide sections' : 'Show sections'}>{Ico.outline}</button>
               <button onClick={() => setSearchOpen(true)} title="Search notes (⌘F)">{Ico.search}</button>
               <button onClick={() => newDrawing(null)} title="New drawing">{Ico.palette}</button>
               <button onClick={() => newNote(null)} title="New note (⌘N)">{Ico.addNote}</button>
@@ -943,7 +959,8 @@ function Notebook() {
             </Suspense>
           </>
         ) : (
-        <>
+        <div className="note-layout">
+        <div className="note-col">
         <input className="title-input" placeholder="Untitled" value={title} onChange={(e) => onTitleChange(e.target.value)} />
         {current && streaming !== 'streaming' && (current.model || current.sourceApp || current.createdAt) && (
           <div className="note-meta">
@@ -1006,6 +1023,7 @@ function Notebook() {
           {editor && (
             <>
               <span className="sep" />
+              <button className={`ico${editor.isActive('heading', { level: 2 }) ? ' active' : ''}`} onClick={toggleSection} title="Make section title">{Ico.heading}</button>
               <button className={`ico${editor.isActive('codeBlock') ? ' active' : ''}`} onClick={toggleCode} title="Code block (pick language on the block)">{Ico.code}</button>
               <button className="ico" onClick={insertDrawing} title="Insert drawing">{Ico.palette}</button>
               <div className="tb-table" ref={tableBtnRef}>
@@ -1049,7 +1067,18 @@ function Notebook() {
             </>
           )}
         </div>
-        </>
+        </div>
+        {outlineOpen && outline.length > 0 && (
+          <aside className="outline">
+            <div className="outline-head">Sections</div>
+            <div className="outline-list">
+              {outline.map((h, i) => (
+                <button key={i} className={`outline-item lvl${h.level}`} onClick={() => jumpToHeading(h.pos)} title={h.text}>{h.text}</button>
+              ))}
+            </div>
+          </aside>
+        )}
+        </div>
         )}
       </main>
 
