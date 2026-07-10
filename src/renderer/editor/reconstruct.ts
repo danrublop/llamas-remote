@@ -16,23 +16,33 @@ import { Editor } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
 import { notebookExtensions } from './extensions';
 import type { AIBlockMeta } from '../../main/services/notebook/sidecar';
+import type { DrawingMeta } from '../../main/services/notebook/drawing-sidecar';
 
-const AI_PAIR = /<!--ai:([a-zA-Z0-9_-]*)-->\n?([\s\S]*?)\n?<!--\/ai-->/g;
+// One tokenizer over BOTH block markers so they're split in document order: an AI-block
+// comment PAIR (id + inner md, groups 1–2) or a Drawing anchor + its viewable image line
+// (id, group 3). The drawing image line is consumed here so it never reaches the parser (the
+// node is rebuilt from the sidecar scene instead).
+const AI_PAIR_SRC = '<!--ai:([a-zA-Z0-9_-]*)-->\\n?([\\s\\S]*?)\\n?<!--\\/ai-->';
+const DRAW_SRC = '<!--draw:([a-zA-Z0-9_-]*)-->(?:\\n!\\[[^\\]]*\\]\\([^)]*\\))?';
+const MARKERS = new RegExp(`${AI_PAIR_SRC}|${DRAW_SRC}`, 'g');
 
 interface Segment {
   ai: boolean;
+  draw?: boolean;
   blockId?: string;
+  drawingId?: string;
   md: string;
 }
 
-/** Split raw Markdown into ordered plain / ai segments by the comment-pair markers. */
+/** Split raw Markdown into ordered plain / ai / drawing segments by the marker comments. */
 export function splitSegments(markdown: string): Segment[] {
   const segs: Segment[] = [];
   let last = 0;
-  for (const m of markdown.matchAll(AI_PAIR)) {
+  for (const m of markdown.matchAll(MARKERS)) {
     const start = m.index ?? 0;
     if (start > last) segs.push({ ai: false, md: markdown.slice(last, start) });
-    segs.push({ ai: true, blockId: m[1], md: m[2] });
+    if (m[1] !== undefined) segs.push({ ai: true, blockId: m[1], md: m[2] });      // AI-block pair
+    else segs.push({ ai: false, draw: true, drawingId: m[3], md: '' });            // drawing anchor
     last = start + m[0].length;
   }
   if (last < markdown.length) segs.push({ ai: false, md: markdown.slice(last) });
@@ -43,8 +53,9 @@ export function splitSegments(markdown: string): Segment[] {
  * Build a TipTap doc (JSON) from saved Markdown + the note's sidecar metadata. AI segments
  * become aiBlock nodes carrying their blockId and (from the sidecar) model + prompt.
  */
-export function markdownToDoc(markdown: string, meta: readonly AIBlockMeta[] = []): JSONContent {
+export function markdownToDoc(markdown: string, meta: readonly AIBlockMeta[] = [], drawings: readonly DrawingMeta[] = []): JSONContent {
   const byId = new Map(meta.map((m) => [m.blockId, m]));
+  const sceneById = new Map(drawings.map((d) => [d.drawingId, d.scene]));
   const editor = new Editor({ extensions: notebookExtensions() });
   const parse = (md: string): JSONContent[] => {
     editor.commands.setContent(md, { contentType: 'markdown' } as never);
@@ -54,6 +65,13 @@ export function markdownToDoc(markdown: string, meta: readonly AIBlockMeta[] = [
   try {
     const content: JSONContent[] = [];
     for (const seg of splitSegments(markdown)) {
+      if (seg.draw) {
+        content.push({
+          type: 'drawing',
+          attrs: { drawingId: seg.drawingId ?? null, scene: (seg.drawingId ? sceneById.get(seg.drawingId) : null) ?? null },
+        });
+        continue;
+      }
       const inner = parse(seg.md).filter((n) => !(n.type === 'paragraph' && !n.content)); // drop empty separators
       if (seg.ai) {
         const m = seg.blockId ? byId.get(seg.blockId) : undefined;

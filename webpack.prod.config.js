@@ -17,6 +17,9 @@ module.exports = {
   },
   module: {
     rules: [
+      // Excalidraw's dep `roughjs` ships ESM with extensionless imports; webpack 5 treats
+      // node_modules ESM as fully-specified and errors. Relax that here.
+      { test: /\.m?js$/, resolve: { fullySpecified: false } },
       {
         test: /\.tsx?$/,
         use: {

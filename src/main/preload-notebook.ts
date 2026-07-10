@@ -4,13 +4,16 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { ModelFit, DetailedModel, CatalogEntry, ModelsList } from './shared/model-types';
 import type { Folder, FolderState } from './services/notebook/folder-store';
 import type { AIBlockMeta } from './services/notebook/sidecar';
+import type { DrawingMeta, IncomingDrawing } from './services/notebook/drawing-sidecar';
+import type { ChatTurn } from './services/chat/chat-transcript';
 export type { ModelFit, DetailedModel, CatalogEntry, ModelsList };
-export type { Folder, FolderState, AIBlockMeta };
+export type { Folder, FolderState, AIBlockMeta, DrawingMeta, IncomingDrawing, ChatTurn };
 
-/** A note's body plus the metadata needed to reconstruct its AI blocks on load. */
+/** A note's body plus the metadata needed to reconstruct its AI blocks + drawings on load. */
 export interface NoteWithBlocks {
   body: string;
   aiBlocks: AIBlockMeta[];
+  drawings: DrawingMeta[];
 }
 
 export interface NotebookMeta {
@@ -27,6 +30,7 @@ export interface NoteSummary {
   tags: string[];
   sourceApp?: string;
   model?: string;
+  sourceKind?: 'text' | 'image' | 'chat';
   imagePath?: string;
   pinned: boolean;
   createdAt: string;
@@ -49,20 +53,22 @@ const api = {
   getNote: (id: string): Promise<NoteWithBlocks | null> => ipcRenderer.invoke('notebook:get-note', id),
   /** Data URL of the note's capture image, or null. */
   getImage: (id: string): Promise<string | null> => ipcRenderer.invoke('notebook:image', id),
+  /** Data URL of a drawing's flattened PNG (images/draw-<id>.png), or null — for the NodeView preview. */
+  getDrawImage: (drawingId: string): Promise<string | null> => ipcRenderer.invoke('notebook:draw-image', drawingId),
   rename: (id: string, title: string): Promise<void> => ipcRenderer.invoke('notebook:rename', id, title),
   setPinned: (id: string, pinned: boolean): Promise<void> => ipcRenderer.invoke('notebook:pin', id, pinned),
   /** Replace a note's tags (persisted to frontmatter + reindexed). */
   setTags: (id: string, tags: string[]): Promise<void> => ipcRenderer.invoke('notebook:set-tags', id, tags),
   /** Distinct tags across all live notes, for the tag filter. */
   getAllTags: (): Promise<string[]> => ipcRenderer.invoke('notebook:all-tags'),
-  /** Persist a note's body; pass `aiBlocks` to also rewrite its AI-block sidecar (omit to leave it). */
-  updateBody: (id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>): Promise<void> =>
-    ipcRenderer.invoke('notebook:update-body', id, body, aiBlocks),
+  /** Persist a note's body; pass `aiBlocks` / `drawings` to also rewrite those sidecars (omit to leave them). */
+  updateBody: (id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>, drawings?: IncomingDrawing[]): Promise<void> =>
+    ipcRenderer.invoke('notebook:update-body', id, body, aiBlocks, drawings),
   hide: (id: string): Promise<void> => ipcRenderer.invoke('notebook:hide', id),
   restore: (id: string): Promise<void> => ipcRenderer.invoke('notebook:restore', id),
   remove: (id: string): Promise<void> => ipcRenderer.invoke('notebook:delete', id),
   /** Create an empty note (optionally inside a folder); resolves with the new note id. */
-  createNote: (folderId?: string | null): Promise<string | null> => ipcRenderer.invoke('notebook:create', folderId ?? null),
+  createNote: (folderId?: string | null, kind?: 'note' | 'chat'): Promise<string | null> => ipcRenderer.invoke('notebook:create', folderId ?? null, kind ?? 'note'),
 
   // ── Folder tree (organization) ──────────────────────────────────────────────────────
   foldersGet: (): Promise<FolderState> => ipcRenderer.invoke('folders:get'),
@@ -149,6 +155,33 @@ const api = {
     const h = (_e: unknown, p: { blockId: string; message: string }) => cb(p);
     ipcRenderer.on('notebook:gen-error', h);
     return () => ipcRenderer.removeListener('notebook:gen-error', h);
+  },
+
+  // ── Chat (source_kind=chat notes) ──────────────────────────────────────────────
+  chatGet: (noteId: string): Promise<ChatTurn[]> => ipcRenderer.invoke('chat:get', noteId),
+  chatSend: (req: { noteId: string; text: string; model?: string; useRag?: boolean }): Promise<{ ok: boolean; answer?: string; citations?: string[]; error?: string }> =>
+    ipcRenderer.invoke('chat:send', req),
+  chatAbort: (noteId: string): Promise<void> => ipcRenderer.invoke('chat:abort', noteId),
+  ragStatus: (): Promise<{ healthy: boolean; chunks: number; model: string }> => ipcRenderer.invoke('chat:rag-status'),
+  onChatStart: (cb: (p: { noteId: string }) => void) => {
+    const h = (_e: unknown, p: { noteId: string }) => cb(p);
+    ipcRenderer.on('chat:start', h);
+    return () => ipcRenderer.removeListener('chat:start', h);
+  },
+  onChatToken: (cb: (p: { noteId: string; delta: string }) => void) => {
+    const h = (_e: unknown, p: { noteId: string; delta: string }) => cb(p);
+    ipcRenderer.on('chat:token', h);
+    return () => ipcRenderer.removeListener('chat:token', h);
+  },
+  onChatDone: (cb: (p: { noteId: string; answer: string; citations: string[]; model: string }) => void) => {
+    const h = (_e: unknown, p: { noteId: string; answer: string; citations: string[]; model: string }) => cb(p);
+    ipcRenderer.on('chat:done', h);
+    return () => ipcRenderer.removeListener('chat:done', h);
+  },
+  onChatError: (cb: (p: { noteId: string; error: string }) => void) => {
+    const h = (_e: unknown, p: { noteId: string; error: string }) => cb(p);
+    ipcRenderer.on('chat:error', h);
+    return () => ipcRenderer.removeListener('chat:error', h);
   },
 };
 

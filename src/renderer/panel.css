@@ -20,7 +20,9 @@
   --radius: 14px;
   --mono: 'JetBrains Mono', 'SF Mono', menlo, monospace;
   --sans: 'Inter', -apple-system, system-ui, sans-serif;
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Springy Dynamic-Island easing: a gentle overshoot on the way out so the grow/shrink reads
+     as fluid rather than a mechanical box resize. */
+  --ease: cubic-bezier(0.34, 1.28, 0.52, 1);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -53,7 +55,7 @@ body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: anti
      (--notch-w is the assumed notch width; the extra px is clearance each side). */
   width: calc(var(--notch-w) + 80px);
   height: var(--nub-h);
-  transition: width 0.28s var(--ease), height 0.28s var(--ease);
+  transition: width 0.42s var(--ease), height 0.42s var(--ease);
   cursor: pointer;
 }
 .island.expanded { width: 560px; height: 258px; cursor: default; }

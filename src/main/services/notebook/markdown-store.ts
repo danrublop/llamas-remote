@@ -20,6 +20,7 @@ import { join, extname } from 'path';
 import type { DiskEntry } from './reconcile';
 import type { NotebookEntry, SourceKind } from './types';
 import { readSidecar, writeSidecar, type AIBlockMeta } from './sidecar';
+import { readDrawingSidecar, writeDrawingSidecar, type DrawingMeta } from './drawing-sidecar';
 
 function esc(value: string): string {
   // Quote scalars that could confuse the minimal parser.
@@ -112,7 +113,7 @@ export function parseEntry(text: string): ParsedFile | null {
     else if (key === 'title') e.title = unesc(val);
     else if (key === 'model') e.model = unesc(val);
     else if (key === 'source_app') e.sourceApp = unesc(val);
-    else if (key === 'source_kind') e.sourceKind = val === 'image' ? 'image' : 'text';
+    else if (key === 'source_kind') e.sourceKind = val === 'image' ? 'image' : val === 'chat' ? 'chat' : 'text';
     else if (key === 'created_at') e.createdAt = unesc(val);
     else if (key === 'image') e.imagePath = unesc(val);
     else if (key === 'pinned') e.pinned = val === 'true';
@@ -179,8 +180,11 @@ export class MarkdownStore {
   delete(id: string): void {
     const path = this.pathFor(id);
     if (existsSync(path)) rmSync(path);
-    // Remove the sidecar too so a deleted note doesn't leave orphaned AI-block metadata behind.
+    // Remove the sidecars too so a deleted note doesn't leave orphaned metadata behind.
     writeSidecar(this.dir, id, []);
+    writeDrawingSidecar(this.dir, id, []);
+    // ponytail: leaves images/draw-<id>.png files behind; add a sweep to syncFromDisk if the
+    // images dir grows unbounded (drawings are rare, so not worth a GC pass yet).
   }
 
   /** AI-block metadata for a note (empty if it has no sidecar). */
@@ -193,6 +197,28 @@ export class MarkdownStore {
   writeAiBlocks(id: string, blocks: AIBlockMeta[]): void {
     if (!isValidEntryId(id)) throw new Error(`Invalid notebook entry id: ${JSON.stringify(id)}`);
     writeSidecar(this.dir, id, blocks);
+  }
+
+  /** Re-editable drawing scenes for a note (empty if it has none). */
+  readDrawings(id: string): DrawingMeta[] {
+    if (!isValidEntryId(id)) throw new Error(`Invalid notebook entry id: ${JSON.stringify(id)}`);
+    return readDrawingSidecar(this.dir, id)?.drawings ?? [];
+  }
+
+  /** Persist a note's drawing scenes (atomic; deletes the sidecar when there are none). */
+  writeDrawings(id: string, drawings: DrawingMeta[]): void {
+    if (!isValidEntryId(id)) throw new Error(`Invalid notebook entry id: ${JSON.stringify(id)}`);
+    writeDrawingSidecar(this.dir, id, drawings);
+  }
+
+  /** Write a drawing's flattened PNG into images/ as `draw-<drawingId>.png` (for external
+      viewers of the raw Markdown). `dataUrl` is a `data:image/png;base64,...` string. */
+  storeDrawingPng(drawingId: string, dataUrl: string): void {
+    if (!isValidEntryId(drawingId)) throw new Error(`Invalid drawing id: ${JSON.stringify(drawingId)}`);
+    const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    const imagesDir = join(this.dir, 'images');
+    if (!existsSync(imagesDir)) mkdirSync(imagesDir, { recursive: true });
+    writeFileSync(join(imagesDir, `draw-${drawingId}.png`), Buffer.from(b64, 'base64'));
   }
 
   /** Copy a capture image into the notebook's images/ dir, keyed by entry id. Returns the

@@ -60,6 +60,12 @@ export class InlineGenerationSession {
     if (this.runs.get(blockId)?.runId === runId) this.runs.delete(blockId);
   }
 
+  /** Abort the in-flight run for one key (user hit stop / switched away), if any. */
+  abort(blockId: string): void {
+    const run = this.runs.get(blockId);
+    if (run) { run.controller.abort(); this.runs.delete(blockId); }
+  }
+
   /** Abort every in-flight inline generation (notebook window closed / reloaded). */
   abortAll(): void {
     for (const run of this.runs.values()) run.controller.abort();

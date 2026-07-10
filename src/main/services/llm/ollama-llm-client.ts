@@ -7,7 +7,7 @@
 
 import axios from 'axios';
 import { readFileSync } from 'fs';
-import type { LlmClient } from '../notch/notch-controller';
+import type { LlmClient, ChatMessage } from '../notch/notch-controller';
 import { readStreamErrorMessage } from './stream-error';
 
 const BASE_URL = 'http://127.0.0.1:11434';
@@ -94,21 +94,35 @@ export class OllamaLlmClient implements LlmClient {
     model: string;
     prompt: string;
     imagePath?: string;
+    messages?: ChatMessage[];
+    system?: string;
     onToken?: (delta: string) => void;
     signal?: AbortSignal;
   }): Promise<string> {
-    const body: Record<string, unknown> = {
-      model: opts.model,
-      prompt: opts.prompt,
-      stream: true,
-      options: { temperature: 0.7, top_p: 0.9 },
-    };
-    if (opts.imagePath) {
+    // Multi-turn → /api/chat (role-tagged messages); single prompt → /api/generate (unchanged).
+    const chat = !!opts.messages;
+    const body: Record<string, unknown> = chat
+      ? {
+          model: opts.model,
+          messages: [
+            ...(opts.system ? [{ role: 'system', content: opts.system }] : []),
+            ...opts.messages!,
+          ],
+          stream: true,
+          options: { temperature: 0.7, top_p: 0.9 },
+        }
+      : {
+          model: opts.model,
+          prompt: opts.prompt,
+          stream: true,
+          options: { temperature: 0.7, top_p: 0.9 },
+        };
+    if (!chat && opts.imagePath) {
       body.images = [readFileSync(opts.imagePath).toString('base64')];
     }
 
     try {
-      const response = await axios.post(`${BASE_URL}/api/generate`, body, {
+      const response = await axios.post(`${BASE_URL}/${chat ? 'api/chat' : 'api/generate'}`, body, {
         timeout: TIMEOUT_MS,
         responseType: 'stream',
         signal: opts.signal,
@@ -138,9 +152,11 @@ export class OllamaLlmClient implements LlmClient {
             if (!line.trim()) continue;
             try {
               const data = JSON.parse(line);
-              if (typeof data.response === 'string') {
-                full += data.response;
-                opts.onToken?.(data.response); // delta chunk, not cumulative
+              // /api/generate streams `response`; /api/chat streams `message.content`.
+              const delta = chat ? data.message?.content : data.response;
+              if (typeof delta === 'string') {
+                full += delta;
+                opts.onToken?.(delta); // delta chunk, not cumulative
               }
               if (data.done) { finish(() => resolve(full)); return; }
             } catch {

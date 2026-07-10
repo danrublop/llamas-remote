@@ -78,6 +78,54 @@ describe('markdown round-trip (md -> doc -> md identity)', () => {
     expect(cells).toContain('a || b');
     expect(cells).toContain('bold');
   });
+
+  it('round-trips a Tab-indented paragraph, preserving inner formatting', () => {
+    const doc = {
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        attrs: { indent: 2 },
+        content: [
+          { type: 'text', text: 'see ' },
+          { type: 'text', marks: [{ type: 'bold' }], text: 'bold' },
+          { type: 'text', text: ' and ' },
+          { type: 'text', marks: [{ type: 'link', attrs: { href: 'https://x.com' } }], text: 'link' },
+        ],
+      }],
+    };
+    const md = jsonToMd(doc);
+    expect(md).toContain('margin-left: 5em'); // 2 levels × 2.5em
+    // Reload and confirm the indent level AND the inner bold/link survived (not flattened to text).
+    const reloaded = new Editor({ extensions: notebookExtensions(), content: md, contentType: 'markdown' });
+    const json = JSON.stringify(reloaded.getJSON());
+    reloaded.destroy();
+    expect(json).toContain('"indent":2');
+    expect(json).toContain('"bold"');
+    expect(json).toContain('https://x.com');
+  });
+
+  it('round-trips per-selection font-family and font-size (textStyle mark)', () => {
+    const doc = {
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        content: [{
+          type: 'text',
+          marks: [{ type: 'textStyle', attrs: { fontFamily: 'Georgia', fontSize: '24px' } }],
+          text: 'styled',
+        }],
+      }],
+    };
+    const md = jsonToMd(doc);
+    expect(md).toContain('font-family: Georgia');
+    expect(md).toContain('font-size: 24px');
+    // And the styled span reloads back into the mark rather than being dropped.
+    const reloaded = new Editor({ extensions: notebookExtensions(), content: md, contentType: 'markdown' });
+    const json = JSON.stringify(reloaded.getJSON());
+    reloaded.destroy();
+    expect(json).toContain('Georgia');
+    expect(json).toContain('24px');
+  });
 });
 
 describe('AiBlock serialization', () => {

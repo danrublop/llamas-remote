@@ -18,6 +18,7 @@ import { NotchController } from './services/notch/notch-controller';
 import { StreamSession } from './services/notch/stream-session';
 import { InlineGenerationSession } from './services/notch/inline-gen-session';
 import { OllamaLlmClient } from './services/llm/ollama-llm-client';
+import { spellSuggest, systemDict } from './services/spell-suggest';
 import { OpenAiLlmClient } from './services/llm/openai-llm-client';
 import { AnthropicLlmClient } from './services/llm/anthropic-llm-client';
 import { MultiLlmClient, CLOUD_MODELS } from './services/llm/multi-llm-client';
@@ -27,9 +28,16 @@ import { FolderStore } from './services/notebook/folder-store';
 import { migrateHtmlBodies } from './services/notebook/migrate-html-bodies';
 import { NotebookStore } from './services/notebook/notebook-store';
 import { sanitizeIncomingBlocks } from './services/notebook/sidecar';
+import { sanitizeIncomingDrawings } from './services/notebook/drawing-sidecar';
 import { MemoryNotebookIndex } from './services/notebook/memory-index';
 import type { NotebookIndex } from './services/notebook/types';
 import { BUILT_IN_PRESETS } from './services/presets/presets';
+import { ChatController, type RagRetriever } from './services/chat/chat-controller';
+import { parseTranscript } from './services/chat/chat-transcript';
+import { EmbedService, EMBED_MODEL } from './services/chat/embed-service';
+import { ChunkStore } from './services/chat/chunk-store';
+import { EmbedSync } from './services/chat/embed-sync';
+import { retrieve as ragRetrieve } from './services/chat/rag';
 
 const DEFAULT_TEXT_MODEL = 'mistral:latest';
 const VISION_MODEL = 'llava:latest';
@@ -87,6 +95,13 @@ class MainProcess {
   // (the panel's single streaming pane) so a notebook generation and a panel query — or two
   // inline generations of different blocks — never abort each other.
   private inlineGen: InlineGenerationSession | null = null;
+  // Chat turns: the controller orchestrates load→[RAG]→stream→persist; the session (reused
+  // InlineGenerationSession, keyed by noteId) streams tokens and supports abort per chat.
+  private chatController: ChatController | null = null;
+  private chatSession: InlineGenerationSession | null = null;
+  private embedService: EmbedService | null = null;
+  private chunkStore: ChunkStore | null = null;
+  private embedSync: EmbedSync | null = null;
   private captureProvider: CaptureProvider | null = null;
   private notebookStore: NotebookStore | null = null;
   // Absolute path to the notebook images dir; note `image:` reads are confined to it so an
@@ -197,6 +212,23 @@ class MainProcess {
         console.warn('notebook syncFromDisk failed:', e);
       }
 
+      // RAG embedding stack: chunk vectors live in a JSON file beside the DB (no native surface).
+      // Re-embed on every write, drop on delete, and backfill any un-embedded notes on launch.
+      this.embedService = new EmbedService();
+      this.chunkStore = new ChunkStore(join(userData, 'chat-embeddings.json'));
+      this.embedSync = new EmbedSync({
+        embedder: this.embedService,
+        store: this.chunkStore,
+        getBody: (id) => this.notebookStore?.getBody(id) ?? null,
+        listNoteIds: () => this.notebookStore?.list().map((n) => n.id) ?? [],
+        model: EMBED_MODEL,
+      });
+      this.notebookStore.setChangeListener((id, deleted) => {
+        if (deleted) this.embedSync?.remove(id);
+        else this.embedSync?.enqueue(id);
+      });
+      this.embedSync.backfill();
+
       // Folder manifest (organization only — lives beside the .md files, never over them).
       this.folderStore = new FolderStore(join(notebookDir, 'folders.json'), () => randomUUID());
 
@@ -232,6 +264,33 @@ class MainProcess {
         send: (channel, payload) => this.sendNotebook(channel, payload),
         newId: () => randomUUID(),
       });
+      // RAG retriever: embeddings-primary (brute-force cosine over chunk vectors) with a BM25
+      // keyword fallback via the notebook index. Note excerpts are wrapped as untrusted data.
+      const retriever: RagRetriever = {
+        retrieve: (query, opts) => {
+          const titles = new Map(this.notebookStore!.list().map((n) => [n.id, n.title]));
+          return ragRetrieve(query, {
+            embedder: this.embedService!,
+            chunks: () => this.chunkStore!.all(),
+            keyword: {
+              search: (q) => this.notebookStore!.search(q).map((h) => ({ id: h.id, snippet: h.snippet })),
+              getBody: (id) => this.notebookStore!.getBody(id),
+            },
+            titleOf: (id) => titles.get(id) || 'Untitled',
+          }, opts);
+        },
+      };
+      // Chat: orchestration (multi-turn + RAG) + a per-noteId streaming session.
+      this.chatController = new ChatController({
+        llm,
+        store: this.notebookStore,
+        now: () => new Date().toISOString(),
+        retrieve: retriever,
+      });
+      this.chatSession = new InlineGenerationSession({
+        send: (channel, payload) => this.sendNotebook(channel, payload),
+        newId: () => randomUUID(),
+      });
     } catch (err) {
       console.error('Failed to set up notch stack:', err);
     }
@@ -262,6 +321,42 @@ class MainProcess {
     };
     wc.on('will-navigate', guard);
     wc.on('will-redirect', guard);
+
+    // Two-finger / right-click on a misspelled word → suggestions + Add to Dictionary.
+    // Electron's spellchecker is on by default; this is the menu that surfaces its results.
+    wc.on('context-menu', (_e, params) => {
+      const { misspelledWord, dictionarySuggestions, isEditable } = params;
+      if (!isEditable && !misspelledWord) return;
+      const items: Electron.MenuItemConstructorOptions[] = [];
+      if (misspelledWord) {
+        // OS suggestions first; if the mangling was too severe for the OS to suggest anything,
+        // fall back to near-matches from the system word list so there's almost always a fix.
+        const suggestions = dictionarySuggestions.length
+          ? dictionarySuggestions
+          : spellSuggest(misspelledWord, systemDict());
+        for (const s of suggestions) {
+          items.push({ label: s, click: () => wc.replaceMisspelling(s) });
+        }
+        if (suggestions.length === 0) {
+          items.push({ label: 'No suggestions', enabled: false });
+        }
+        items.push(
+          { type: 'separator' },
+          { label: 'Add to Dictionary', click: () => wc.session.addWordToSpellCheckerDictionary(misspelledWord) },
+          { type: 'separator' },
+        );
+      }
+      if (isEditable) {
+        items.push(
+          { label: 'Cut', role: 'cut', enabled: params.editFlags.canCut },
+          { label: 'Copy', role: 'copy', enabled: params.editFlags.canCopy },
+          { label: 'Paste', role: 'paste', enabled: params.editFlags.canPaste },
+        );
+      } else if (params.selectionText) {
+        items.push({ label: 'Copy', role: 'copy' });
+      }
+      if (items.length) Menu.buildFromTemplate(items).popup({ window: win });
+    });
   }
 
   // Dynamic-Island style: a transparent canvas pinned to the top-center, the same width
@@ -831,7 +926,7 @@ class MainProcess {
       if (!isValidEntryId(id) || !this.notebookStore) return null;
       const body = this.notebookStore.getBody(id);
       if (body === null) return null;
-      return { body, aiBlocks: this.notebookStore.getAiBlocks(id) };
+      return { body, aiBlocks: this.notebookStore.getAiBlocks(id), drawings: this.notebookStore.getDrawings(id) };
     });
     this.ipcHandle('notebook:image', (_e, id: string) => {
       if (!isValidEntryId(id)) return null;
@@ -850,6 +945,21 @@ class MainProcess {
         return null;
       }
     });
+    // Data-URL of a drawing's flattened PNG (images/draw-<id>.png), for the NodeView preview
+    // after a reload. Same images-dir confinement as notebook:image.
+    this.ipcHandle('notebook:draw-image', (_e, drawingId: string) => {
+      if (!isValidEntryId(drawingId) || !this.notebookImagesDir) return null;
+      const p = join(this.notebookImagesDir, `draw-${drawingId}.png`);
+      const resolved = resolve(p);
+      const imagesRoot = resolve(this.notebookImagesDir);
+      if (resolved !== imagesRoot && !resolved.startsWith(imagesRoot + sep)) return null;
+      if (!existsSync(p)) return null;
+      try {
+        return `data:image/png;base64,${readFileSync(p).toString('base64')}`;
+      } catch {
+        return null;
+      }
+    });
     this.ipcHandle('notebook:rename', (_e, id: string, title: string) => { if (isValidEntryId(id)) this.notebookStore?.rename(id, title); });
     this.ipcHandle('notebook:pin', (_e, id: string, pinned: boolean) => { if (isValidEntryId(id)) this.notebookStore?.setPinned(id, pinned); });
     // Replace a note's tag set. Tags are user/model/clipboard-sourced, so sanitize at the
@@ -861,12 +971,14 @@ class MainProcess {
     });
     // Distinct tags across all live notes, for the tag filter list.
     this.ipcHandle('notebook:all-tags', () => this.notebookStore?.getAllTags() ?? []);
-    this.ipcHandle('notebook:update-body', (_e, id: string, body: string, aiBlocks?: unknown) => {
+    this.ipcHandle('notebook:update-body', (_e, id: string, body: string, aiBlocks?: unknown, drawings?: unknown) => {
       if (!isValidEntryId(id)) return;
-      // Only touch the sidecar when the renderer actually sent blocks. Undefined = body-only
-      // save (leave the sidecar alone); an array (even empty) = rewrite it (empty deletes it).
+      // Only touch a sidecar when the renderer actually sent that array. Undefined = leave it;
+      // an array (even empty) = rewrite it (empty deletes it). Both payloads are untrusted
+      // (model/clipboard-sourced), so sanitize at this boundary before they reach disk.
       const blocks = aiBlocks === undefined ? undefined : sanitizeIncomingBlocks(aiBlocks);
-      this.notebookStore?.updateBody(id, body, blocks);
+      const draws = drawings === undefined ? undefined : sanitizeIncomingDrawings(drawings);
+      this.notebookStore?.updateBody(id, body, blocks, draws);
     });
     this.ipcHandle('notebook:hide', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.hide(id); });
     this.ipcHandle('notebook:restore', (_e, id: string) => { if (isValidEntryId(id)) this.notebookStore?.restore(id); });
@@ -877,12 +989,55 @@ class MainProcess {
     });
 
     // Create an empty note from the notebook UI (New note), optionally inside a folder.
-    this.ipcHandle('notebook:create', (_e, folderId?: string) => {
+    this.ipcHandle('notebook:create', (_e, folderId?: string, kind?: 'note' | 'chat') => {
       if (!this.notebookStore) return null;
       const id = randomUUID();
-      this.notebookStore.save(makeEntry({ id, body: '', tags: [], model: '', sourceApp: '' }));
+      // A chat is just a note with source_kind=chat; it flows through the same save path.
+      this.notebookStore.save(makeEntry({ id, body: '', tags: [], model: '', sourceApp: '', sourceKind: kind === 'chat' ? 'chat' : 'text' }));
       if (folderId) this.folderStore?.moveNote(id, folderId);
       return id;
+    });
+
+    // ── Chat (a note with source_kind=chat; multi-turn + RAG) ─────────────────────────
+    this.ipcHandle('chat:get', (_e, noteId: string) => {
+      if (!this.notebookStore || !isValidEntryId(noteId)) return [];
+      return parseTranscript(this.notebookStore.getBody(noteId) ?? '');
+    });
+    this.ipcHandle('chat:abort', (_e, noteId: string) => {
+      if (isValidEntryId(noteId)) this.chatSession?.abort(noteId);
+    });
+    // RAG health for the chat UI: is the embed model available, and how many chunks are indexed.
+    this.ipcHandle('chat:rag-status', async () => ({
+      healthy: (await this.embedService?.healthy()) ?? false,
+      chunks: this.chunkStore?.count() ?? 0,
+      model: EMBED_MODEL,
+    }));
+    this.ipcHandle('chat:send', async (_e, req: { noteId: string; text: string; model?: string; useRag?: boolean }) => {
+      if (!this.chatController || !this.chatSession || !isValidEntryId(req.noteId) || !req.text?.trim()) {
+        return { ok: false, error: 'Chat unavailable' };
+      }
+      const model = req.model || this.routerConfig.defaultTextModel;
+      const noteId = req.noteId;
+      const { runId, signal } = this.chatSession.begin(noteId);
+      this.chatSession.emit(noteId, runId, 'chat:start', { noteId });
+      try {
+        const { answer, citations } = await this.chatController.sendTurn({
+          noteId, text: req.text, model, useRag: req.useRag ?? true,
+          onToken: (delta) => this.chatSession!.emit(noteId, runId, 'chat:token', { noteId, delta }),
+          signal,
+        });
+        this.chatSession.emit(noteId, runId, 'chat:done', { noteId, answer, citations, model });
+        return { ok: true, answer, citations };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Deliberate cancel: no error banner (the user turn is already saved).
+        if (msg !== 'cancelled' && !signal.aborted) {
+          this.chatSession.emit(noteId, runId, 'chat:error', { noteId, error: msg });
+        }
+        return { ok: false, error: msg };
+      } finally {
+        this.chatSession.end(noteId, runId);
+      }
     });
 
     // ── Folder manifest (tree + note→folder assignments) ──────────────────────────────

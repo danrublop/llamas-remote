@@ -13,6 +13,7 @@ import { statSync } from 'fs';
 import { reconcileAll } from './reconcile';
 import type { MarkdownStore } from './markdown-store';
 import type { AIBlockMeta } from './sidecar';
+import type { DrawingMeta, IncomingDrawing } from './drawing-sidecar';
 import type { NotebookEntry, NotebookIndex, NoteSummary, SearchHit } from './types';
 
 export interface SyncSummary {
@@ -27,6 +28,11 @@ export class NotebookStore {
     private readonly files: MarkdownStore,
     private readonly index: NotebookIndex,
   ) {}
+
+  // Fired after any content write (id, deleted=false) or delete (deleted=true). Used by the
+  // embedding sync to keep RAG vectors current across every write path (save/edit/notch/chat).
+  private onChange?: (id: string, deleted: boolean) => void;
+  setChangeListener(cb: (id: string, deleted: boolean) => void): void { this.onChange = cb; }
 
   /** Persist a new/edited entry: write the file, then mirror it into the index. */
   save(entry: NotebookEntry): void {
@@ -60,6 +66,7 @@ export class NotebookStore {
       imagePath,
       indexedMtimeMs: mtimeMs,
     });
+    this.onChange?.(toWrite.id, false);
   }
 
   /** Absolute path to a note's capture image, or null. */
@@ -109,16 +116,34 @@ export class NotebookStore {
    * `aiBlocks` is supplied, the AI-block sidecar is rewritten from it (the live doc is
    * authoritative for which blocks exist, so this prunes orphaned metadata).
    */
-  updateBody(id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>): void {
+  updateBody(id: string, body: string, aiBlocks?: Array<Omit<AIBlockMeta, 'createdAt'>>, drawings?: IncomingDrawing[]): void {
     const e = this.files.read(id);
-    if (e) this.persist({ ...e, body });
-    else this.index.updateBody(id, body);
+    if (e) this.persist({ ...e, body }); // fires onChange
+    else { this.index.updateBody(id, body); this.onChange?.(id, false); }
     if (aiBlocks) this.setAiBlocks(id, aiBlocks);
+    if (drawings) this.setDrawings(id, drawings);
   }
 
   /** AI-block metadata for a note (for reconstructing the blocks on load). */
   getAiBlocks(id: string): AIBlockMeta[] {
     return this.files.readAiBlocks(id);
+  }
+
+  /** Re-editable drawing scenes for a note (for reconstructing drawings on load). */
+  getDrawings(id: string): DrawingMeta[] {
+    return this.files.readDrawings(id);
+  }
+
+  // Persist the scenes still in the doc (prose wins on existence, so drawings absent from
+  // `incoming` are pruned), and write a fresh PNG for any drawing that carried one (only those
+  // edited this session do — unedited drawings keep their existing images/ file untouched).
+  private setDrawings(id: string, incoming: IncomingDrawing[]): void {
+    this.files.writeDrawings(id, incoming.map((d) => ({ drawingId: d.drawingId, scene: d.scene })));
+    for (const d of incoming) {
+      if (d.png) {
+        try { this.files.storeDrawingPng(d.drawingId, d.png); } catch (err) { console.warn('storeDrawingPng failed:', err); }
+      }
+    }
   }
 
   // Merge incoming blocks with the existing sidecar so each block's createdAt is preserved
@@ -149,6 +174,7 @@ export class NotebookStore {
   delete(id: string): void {
     this.files.delete(id);
     this.index.tombstone(id);
+    this.onChange?.(id, true);
   }
 
   /**
