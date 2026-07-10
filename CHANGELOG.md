@@ -3,6 +3,15 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.0] - 2026-07-10
+
+### Added
+- **Section flags.** Every heading gets a sparkle in its left gutter — click (or two-finger-click) it to colour that section. The colour also dots the section in the sidebar outline. Flags persist per note.
+- **Find in note (⌘F).** With a note open, ⌘F opens an in-note find bar that highlights every match and marks the current one; Enter / ⇧Enter step through them, Esc closes. (⌘F with no note open still opens cross-note search.)
+
+### Fixed
+- Sidebar section labels no longer show raw Markdown (`**Javadoc**` → Javadoc) and dropped the stray native hover tooltip.
+
 ## [1.9.0] - 2026-07-10
 
 ### Added

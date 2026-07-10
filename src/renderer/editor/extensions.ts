@@ -11,6 +11,7 @@ import { TextStyle, Color, FontFamily, FontSize } from '@tiptap/extension-text-s
 import { Highlight } from '@tiptap/extension-highlight';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { createLowlight, common } from 'lowlight';
+import java from 'highlight.js/lib/languages/java';
 import { Paragraph } from '@tiptap/extension-paragraph';
 import { Heading } from '@tiptap/extension-heading';
 import { Indent, INDENT_EM } from './indent';
@@ -24,6 +25,22 @@ import { Drawing } from './drawing';
 // Syntax highlighting for code blocks — `common` bundles ~37 languages (java, js, python, …).
 // Exported so the live editor can build a NodeView variant that reuses this same instance.
 export const lowlight = createLowlight(common);
+// highlight.js's Java grammar leaves dotted method calls (System.out.println, list.add) unstyled,
+// so println/print/etc. render as plain text unlike a real IDE. Re-register java with a leading
+// rule that tags `.method(` invocations as title.function_ (picks up the .hljs-title color).
+// ponytail: dotted calls only — bare `foo()` and the receiver (System/out) stay plain, which
+// avoids mis-coloring keywords like `if (`/`for (`.
+lowlight.register('java', (hljs: Parameters<typeof java>[0]) => {
+  const def = java(hljs);
+  // multi-match begin + scoped className (className:{2:...}) is valid highlight.js but missing
+  // from lowlight's Mode typings, hence the cast.
+  def.contains.unshift({
+    begin: [/\./, hljs.UNDERSCORE_IDENT_RE, /(?=\s*\()/],
+    className: { 2: 'title.function_' },
+    relevance: 0,
+  } as never);
+  return def;
+});
 
 // Markdown has no syntax for text color / highlight, so we serialize those marks to inline
 // HTML (`<span style="color">`, `<mark style="background-color">`) — which the marks'

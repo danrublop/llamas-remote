@@ -6,6 +6,7 @@ import { ModelsView } from './models-view';
 import { NotebookEditor } from './editor/NotebookEditor';
 import { ChatView } from './chat-view';
 import type { Editor } from '@tiptap/react';
+import { searchPlugin, searchKey, headingFlagPlugin, flagKey, type SearchState } from './editor/inline-tools';
 import './notebook.css';
 
 // A drawing document renders a full Excalidraw canvas in the main area; lazy so Excalidraw
@@ -83,6 +84,8 @@ const FONTS = [
   'Chalkboard SE', 'Noteworthy', 'Snell Roundhand', 'Papyrus',
 ];
 const SIZES = ['12', '14', '16', '18', '20', '24', '28', '32'];
+// Section-flag palette (sparkle in the heading gutter → picks one of these).
+const FLAG_COLORS = ['#e5484d', '#f5a623', '#f2d64b', '#30a46c', '#3b82f6', '#8b5cf6', '#ec4899'];
 
 // Monochrome line icons (currentColor) for a consistent toolbar — no emoji.
 const Ico = {
@@ -251,6 +254,14 @@ function Notebook() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('nb-theme') === 'dark' ? 'dark' : 'light'));
   const [view, setView] = useState<'notes' | 'settings'>('notes'); // right pane: editor / combined settings
   const [outlineOpen, setOutlineOpen] = useState(localStorage.getItem('nb-outline') !== 'off'); // section outline panel
+  const [flagColors, setFlagColors] = useState<Record<string, string>>({}); // heading text → flag colour (per note)
+  const [flagMenu, setFlagMenu] = useState<{ text: string; x: number; y: number } | null>(null);
+  const flagColorsRef = useRef(flagColors); // the once-registered flag plugin reads the latest map
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findInfo, setFindInfo] = useState<{ count: number; index: number }>({ count: 0, index: 0 });
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const editorRef = useRef<Editor | null>(null);
   const [image, setImage] = useState<string | null>(null); // capture data URL for the selected note
   const [words, setWords] = useState(0); // live word count
   const [toast, setToast] = useState<{ msg: string; undo?: () => void } | null>(null);
@@ -407,7 +418,8 @@ function Notebook() {
       if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
       const k = e.key.toLowerCase();
       if (k === 'n') { e.preventDefault(); newNote(); }
-      else if (k === 'f') { e.preventDefault(); setView('notes'); setSearchOpen(true); }
+      // ⌘F finds within the open note (highlights matches); with no note open, the cross-note search.
+      else if (k === 'f') { e.preventDefault(); if (editorRef.current) openFind(); else { setView('notes'); setSearchOpen(true); } }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -577,12 +589,77 @@ function Notebook() {
   function toggleSection() { editor?.chain().focus().toggleHeading({ level: 2 }).run(); }
   // Live section outline: every heading in the doc → click an item to jump to it. Cheap doc walk,
   // recomputed each render (the toolbar already re-renders on every transaction, above).
-  const outline: { pos: number; level: number; text: string }[] = [];
+  const outline: { pos: number; level: number; key: string; text: string }[] = [];
   if (editor) editor.state.doc.descendants((node, pos) => {
-    if (node.type.name === 'heading') outline.push({ pos, level: node.attrs.level as number, text: node.textContent.trim() || 'Untitled section' });
+    if (node.type.name !== 'heading') return;
+    const raw = node.textContent.trim();
+    // Strip markdown emphasis/code markers so the sidebar label reads "Javadoc", not "**Javadoc**".
+    outline.push({ pos, level: node.attrs.level as number, key: raw, text: (raw || 'Untitled section').replace(/[*`~]/g, '') });
   });
   function jumpToHeading(pos: number) { editor?.chain().focus().setTextSelection(pos + 1).scrollIntoView().run(); }
   function toggleOutline() { setOutlineOpen((v) => { localStorage.setItem('nb-outline', v ? 'off' : 'on'); return !v; }); }
+
+  // ---- section flags + in-note find --------------------------------------------------------
+  editorRef.current = editor;
+  // Register the find-highlight + heading-flag plugins on the live editor (once per instance).
+  useEffect(() => {
+    if (!editor) return;
+    editor.registerPlugin(searchPlugin());
+    editor.registerPlugin(headingFlagPlugin((t) => flagColorsRef.current[t], (t, x, y) => setFlagMenu({ text: t, x, y })));
+    return () => { if (!editor.isDestroyed) { editor.unregisterPlugin(searchKey); editor.unregisterPlugin(flagKey); } };
+  }, [editor]);
+  // Load this note's flag colours; clear the find bar on note switch.
+  useEffect(() => {
+    let map: Record<string, string> = {};
+    if (selectedId) { try { map = JSON.parse(localStorage.getItem(`nb-flags-${selectedId}`) || '{}'); } catch { map = {}; } }
+    setFlagColors(map);
+    setFindOpen(false); setFindQuery('');
+  }, [selectedId]);
+  // Push the latest flag map to the plugin and force it to redraw the gutter sparkles.
+  useEffect(() => {
+    flagColorsRef.current = flagColors;
+    if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta(flagKey, true));
+  }, [flagColors, editor]);
+  function setFlagColor(text: string, color: string | null) {
+    setFlagColors((prev) => {
+      const next = { ...prev };
+      if (color) next[text] = color; else delete next[text];
+      if (selectedId) localStorage.setItem(`nb-flags-${selectedId}`, JSON.stringify(next));
+      return next;
+    });
+    setFlagMenu(null);
+  }
+
+  function openFind() { setFindOpen(true); requestAnimationFrame(() => findInputRef.current?.select()); }
+  function scrollToCurrentMatch() {
+    const ed = editor; if (!ed) return;
+    const s = searchKey.getState(ed.state) as SearchState | undefined;
+    const r = s?.ranges[s.current]; if (!r) return;
+    const dom = ed.view.domAtPos(r.from);
+    const el = dom.node.nodeType === 3 ? (dom.node as Text).parentElement : (dom.node as HTMLElement);
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  function runFind(q: string) {
+    setFindQuery(q);
+    const ed = editor; if (!ed) return;
+    ed.view.dispatch(ed.state.tr.setMeta(searchKey, { query: q, current: 0 }));
+    const s = searchKey.getState(ed.state) as SearchState;
+    setFindInfo({ count: s.ranges.length, index: s.ranges.length ? 1 : 0 });
+    scrollToCurrentMatch();
+  }
+  function findStep(dir: 1 | -1) {
+    const ed = editor; if (!ed) return;
+    const s = searchKey.getState(ed.state) as SearchState;
+    if (!s.ranges.length) return;
+    const current = (s.current + dir + s.ranges.length) % s.ranges.length;
+    ed.view.dispatch(ed.state.tr.setMeta(searchKey, { current }));
+    setFindInfo({ count: s.ranges.length, index: current + 1 });
+    scrollToCurrentMatch();
+  }
+  function closeFind() {
+    setFindOpen(false); setFindQuery('');
+    const ed = editor; if (ed && !ed.isDestroyed) ed.view.dispatch(ed.state.tr.setMeta(searchKey, { query: '' }));
+  }
   function applyColor(hex: string) { setTextColor(hex); editor?.chain().focus().setColor(hex).run(); }
   // Toggle the red squiggle. spellcheck lives on the contenteditable DOM node, so drive it
   // directly on the editor's view; reapply whenever the editor remounts (note switch).
@@ -746,8 +823,10 @@ function Notebook() {
         className={`section-row lvl${h.level}`}
         style={{ paddingLeft: 9 + depth * 15 + 26 + (h.level - 1) * 12 }}
         onClick={() => jumpToHeading(h.pos)}
-        title={h.text}
-      >{h.text}</button>
+      >
+        {flagColors[h.key] && <span className="sec-dot" style={{ background: flagColors[h.key] }} />}
+        <span className="sec-label">{h.text}</span>
+      </button>
     ))}
     </React.Fragment>
     );
@@ -974,6 +1053,25 @@ function Notebook() {
           </>
         ) : (
         <>
+        {findOpen && (
+          <div className="find-bar">
+            <input
+              ref={findInputRef}
+              className="find-input"
+              placeholder="Find in note"
+              value={findQuery}
+              onChange={(e) => runFind(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); }
+                else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+              }}
+            />
+            <span className="find-count">{findInfo.count ? `${findInfo.index}/${findInfo.count}` : findQuery ? '0/0' : ''}</span>
+            <button className="find-nav" onClick={() => findStep(-1)} title="Previous (⇧⏎)">‹</button>
+            <button className="find-nav" onClick={() => findStep(1)} title="Next (⏎)">›</button>
+            <button className="find-nav" onClick={closeFind} title="Close (Esc)">✕</button>
+          </div>
+        )}
         <input className="title-input" placeholder="Untitled" value={title} onChange={(e) => onTitleChange(e.target.value)} />
         {current && streaming !== 'streaming' && (current.model || current.sourceApp || current.createdAt) && (
           <div className="note-meta">
@@ -1083,6 +1181,17 @@ function Notebook() {
         </>
         )}
       </main>
+
+      {flagMenu && (
+        <div className="flag-menu-backdrop" onMouseDown={() => setFlagMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFlagMenu(null); }}>
+          <div className="flag-menu" style={{ left: Math.min(flagMenu.x, window.innerWidth - 200), top: Math.min(flagMenu.y, window.innerHeight - 60) }} onMouseDown={(e) => e.stopPropagation()}>
+            {FLAG_COLORS.map((c) => (
+              <button key={c} className={`flag-swatch${flagColors[flagMenu.text] === c ? ' on' : ''}`} style={{ background: c }} onClick={() => setFlagColor(flagMenu.text, c)} title={c} />
+            ))}
+            <button className="flag-swatch flag-clear" onClick={() => setFlagColor(flagMenu.text, null)} title="Remove flag">✕</button>
+          </div>
+        </div>
+      )}
 
       {actionTarget && (
         <div className="action-modal-backdrop" onMouseDown={closeActions}>
