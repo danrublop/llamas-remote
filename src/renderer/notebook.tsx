@@ -111,8 +111,6 @@ const Ico = {
   spellcheck: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 8 8 12 16 4" /><path d="M3 18c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0" /></svg>,
   // Lucide "heading" — the make-section-title button.
   heading: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4v16" /><path d="M18 4v16" /><path d="M6 12h12" /></svg>,
-  // Section outline toggle (table-of-contents).
-  outline: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><circle cx="4" cy="6" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" /></svg>,
   moon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>,
   sun: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="4" /><line x1="12" y1="20" x2="12" y2="22" /><line x1="4.2" y1="4.2" x2="5.6" y2="5.6" /><line x1="18.4" y1="18.4" x2="19.8" y2="19.8" /><line x1="2" y1="12" x2="4" y2="12" /><line x1="20" y1="12" x2="22" y2="12" /><line x1="4.2" y1="19.8" x2="5.6" y2="18.4" /><line x1="18.4" y1="5.6" x2="19.8" y2="4.2" /></svg>,
 };
@@ -707,9 +705,12 @@ function Notebook() {
     return c;
   };
 
-  const renderNoteRow = (n: NoteSummary, depth: number) => (
+  const renderNoteRow = (n: NoteSummary, depth: number) => {
+    // Sections of the OPEN note (the only note whose live doc we have) drop down under its row.
+    const showSections = selectedId === n.id && outline.length > 0;
+    return (
+    <React.Fragment key={n.id}>
     <div
-      key={n.id}
       className={`note-row${selectedId === n.id ? ' selected' : ''}`}
       style={{ paddingLeft: 9 + depth * 15 }}
       draggable
@@ -735,8 +736,22 @@ function Notebook() {
           </div>
         )}
       </div>
+      {showSections && (
+        <button className={`sec-caret${outlineOpen ? ' open' : ''}`} onClick={(e) => { e.stopPropagation(); toggleOutline(); }} title={outlineOpen ? 'Hide sections' : 'Show sections'}>{Ico.chevron}</button>
+      )}
     </div>
-  );
+    {showSections && outlineOpen && outline.map((h, i) => (
+      <button
+        key={i}
+        className={`section-row lvl${h.level}`}
+        style={{ paddingLeft: 9 + depth * 15 + 26 + (h.level - 1) * 12 }}
+        onClick={() => jumpToHeading(h.pos)}
+        title={h.text}
+      >{h.text}</button>
+    ))}
+    </React.Fragment>
+    );
+  };
 
   const renderFolder = (f: Folder, depth: number): React.ReactNode => {
     const isOpen = expanded.has(f.id);
@@ -921,7 +936,6 @@ function Notebook() {
           </div>
           {view === 'notes' && streaming !== 'streaming' && (
             <div className="main-actions">
-              <button className={outlineOpen ? 'active' : ''} onClick={toggleOutline} title={outlineOpen ? 'Hide sections' : 'Show sections'}>{Ico.outline}</button>
               <button onClick={() => setSearchOpen(true)} title="Search notes (⌘F)">{Ico.search}</button>
               <button onClick={() => newDrawing(null)} title="New drawing">{Ico.palette}</button>
               <button onClick={() => newNote(null)} title="New note (⌘N)">{Ico.addNote}</button>
@@ -959,8 +973,7 @@ function Notebook() {
             </Suspense>
           </>
         ) : (
-        <div className="note-layout">
-        <div className="note-col">
+        <>
         <input className="title-input" placeholder="Untitled" value={title} onChange={(e) => onTitleChange(e.target.value)} />
         {current && streaming !== 'streaming' && (current.model || current.sourceApp || current.createdAt) && (
           <div className="note-meta">
@@ -1067,18 +1080,7 @@ function Notebook() {
             </>
           )}
         </div>
-        </div>
-        {outlineOpen && outline.length > 0 && (
-          <aside className="outline">
-            <div className="outline-head">Sections</div>
-            <div className="outline-list">
-              {outline.map((h, i) => (
-                <button key={i} className={`outline-item lvl${h.level}`} onClick={() => jumpToHeading(h.pos)} title={h.text}>{h.text}</button>
-              ))}
-            </div>
-          </aside>
-        )}
-        </div>
+        </>
         )}
       </main>
 
