@@ -3,7 +3,7 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.8.0] - 2026-07-10
+## [1.8.1] - 2026-07-10
 
 ### Added
 - **Drawing documents.** A palette button — left of New note, and in the Create / folder-right-click menus — makes a drawing its own first-class item alongside notes and chats (`source_kind: drawing`, palette icon in the note list and search). Opening one drops a full Excalidraw canvas straight into the main content area (the way a chat opens the chat view) and **autosaves as you draw** — no Cancel/Done. The scene lives in the note's sidecar, a flattened PNG in `images/draw-<id>.png`, and the note body keeps the viewable `![drawing](…)` anchor so the raw `.md` still shows the picture. Drawings can still be embedded inside a regular note via the editor toolbar's palette button.
@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 - **Font/size/color pickers now behave like a real editor.** Changing the font, size, text color, or highlight applies only to the selected text — or, with no selection, sets a pending style that the next typed text picks up (instead of silently re-styling every note). Selecting text now shows that text's actual font, size, and colors in the toolbar.
+- **macOS auto-update builds.** The universal build no longer aborts on the shared `ocr` helper (`x64ArchFiles`), so signed DMG/ZIP artifacts and the `latest-mac.yml` update feed actually publish.
 
 ## [1.7.0] - 2026-07-10
 
