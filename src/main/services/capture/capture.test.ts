@@ -58,6 +58,17 @@ describe('captureViaClipboard', () => {
     expect(cb.value).toBe('survivor');
   });
 
+  it('waits for the hotkey modifiers to clear before the synthetic copy', async () => {
+    const order: string[] = [];
+    const cb = fakeClipboard('orig');
+    const sleep = vi.fn(async (ms: number) => { order.push(`sleep:${ms}`); });
+    const triggerCopy = vi.fn(async () => { order.push('copy'); cb.writeText('sel'); });
+    await captureViaClipboard(cb, triggerCopy, undefined, { sleep, captureDelayMs: 0, preCopyDelayMs: 250 });
+    // The 250ms wait must happen BEFORE the synthetic copy fires.
+    expect(order[0]).toBe('sleep:250');
+    expect(order.indexOf('sleep:250')).toBeLessThan(order.indexOf('copy'));
+  });
+
   it('treats whitespace-only copies as empty', async () => {
     const cb = fakeClipboard('orig');
     const res = await captureViaClipboard(cb, async () => cb.writeText('   \n  '), undefined, noSleep);
