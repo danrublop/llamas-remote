@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { BrandIcon } from './model-icon';
 
 // Chat surface for a source_kind=chat note: a bubble transcript + a composer with model picker
 // and a RAG toggle. Streaming mirrors the notch panel's XSS-safe path — deltas are appended via
@@ -8,9 +9,13 @@ interface ChatTurn { role: 'user' | 'assistant'; content: string; model?: string
 interface NoteRef { id: string; title: string }
 
 const Ico = {
-  up: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5" /><polyline points="6 11 12 5 18 11" /></svg>,
-  stop: <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2.5" /></svg>,
+  up: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5" /><polyline points="6 11 12 5 18 11" /></svg>,
+  stop: <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2.5" /></svg>,
+  copy: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
+  check: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>,
+  chev: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>,
   notes: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>,
+  app: <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.146 15.854a1.207 1.207 0 0 1 1.708 0l1.56 1.56A2 2 0 0 1 15 18.828V21a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-2.172a2 2 0 0 1 .586-1.414z" /><path d="M18.828 15a2 2 0 0 1-1.414-.586l-1.56-1.56a1.207 1.207 0 0 1 0-1.708l1.56-1.56A2 2 0 0 1 18.828 9H21a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1z" /><path d="M6.586 14.414A2 2 0 0 1 5.172 15H3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h2.172a2 2 0 0 1 1.414.586l1.56 1.56a1.207 1.207 0 0 1 0 1.708z" /><path d="M9 3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2.172a2 2 0 0 1-.586 1.414l-1.56 1.56a1.207 1.207 0 0 1-1.708 0l-1.56-1.56A2 2 0 0 1 9 5.172z" /></svg>,
 };
 
 const RAG_KEY = 'nb-chat-rag';
@@ -30,8 +35,11 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
   const [model, setModel] = useState(() => localStorage.getItem(MODEL_KEY) || '');
   const [useRag, setUseRag] = useState(() => localStorage.getItem(RAG_KEY) !== 'off');
   const [ragReady, setRagReady] = useState(true); // false → embed model not pulled (falls back to keyword)
+  const [modelOpen, setModelOpen] = useState(false);
+  const [copied, setCopied] = useState(-1); // index of the turn whose copy just fired
   const streamRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const modelPickRef = useRef<HTMLDivElement>(null);
   const noteIdRef = useRef(noteId);
   noteIdRef.current = noteId;
 
@@ -90,14 +98,29 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   }
 
-  const pickModel = (m: string) => { setModel(m); localStorage.setItem(MODEL_KEY, m); };
+  const pickModel = (m: string) => { setModel(m); localStorage.setItem(MODEL_KEY, m); setModelOpen(false); };
   const toggleRag = () => setUseRag((v) => { localStorage.setItem(RAG_KEY, v ? 'off' : 'on'); return !v; });
+
+  async function copyTurn(i: number, text: string) {
+    try { await navigator.clipboard.writeText(text); setCopied(i); setTimeout(() => setCopied((c) => (c === i ? -1 : c)), 1500); } catch { /* clipboard denied */ }
+  }
+
+  // Close the model dropdown on an outside click.
+  useEffect(() => {
+    if (!modelOpen) return;
+    const onDown = (e: MouseEvent) => { if (modelPickRef.current && !modelPickRef.current.contains(e.target as Node)) setModelOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [modelOpen]);
 
   return (
     <div className="chat">
       <div className="chat-scroll" ref={scrollRef}>
         {turns.length === 0 && !streaming && (
-          <div className="chat-empty">Ask anything. {useRag ? 'Answers can draw on your notes.' : 'Notes context is off.'}</div>
+          <div className="chat-empty">
+            <span className="chat-empty-glyph">{Ico.app}</span>
+            <span>Ask anything. {useRag ? 'Answers can draw on your notes.' : 'Notes context is off.'}</span>
+          </div>
         )}
         {turns.map((t, i) => (
           <div key={i} className={`chat-msg ${t.role}`}>
@@ -108,6 +131,13 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
                 {t.cites.map((id) => (
                   <button key={id} className="chat-cite" onClick={() => onOpenNote(id)} title={`Open “${titleOf(id)}”`}>{titleOf(id)}</button>
                 ))}
+              </div>
+            )}
+            {t.role === 'assistant' && (
+              <div className="chat-actions">
+                <button className="chat-copy" onClick={() => copyTurn(i, t.content)} title={copied === i ? 'Copied' : 'Copy response'}>
+                  {copied === i ? Ico.check : Ico.copy}
+                </button>
               </div>
             )}
           </div>
@@ -135,17 +165,34 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
           />
           <div className="chat-bar">
             <div className="chat-bar-left">
-              <select value={model} onChange={(e) => pickModel(e.target.value)} title="Model" className="chat-model">
-                <option value="">Default model</option>
-                {models.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-              <button className={`chat-rag${useRag ? ' on' : ''}`} onClick={toggleRag} title={useRag ? 'Using your notes as context' : 'Notes context off'}>
-                {Ico.notes} Notes
-              </button>
+              <div className="chat-model-pick" ref={modelPickRef}>
+                <button className="chat-model" onClick={() => setModelOpen((v) => !v)} title="Model">
+                  {model ? <BrandIcon model={model} size={15} /> : <span className="chat-model-dot" />}
+                  <span className="chat-model-name">{model || 'Default model'}</span>
+                  {Ico.chev}
+                </button>
+                {modelOpen && (
+                  <div className="chat-model-menu">
+                    <button className={`chat-model-opt${model === '' ? ' on' : ''}`} onClick={() => pickModel('')}>
+                      <span className="chat-model-dot" /><span className="chat-model-name">Default model</span>
+                    </button>
+                    {models.map((m) => (
+                      <button key={m} className={`chat-model-opt${m === model ? ' on' : ''}`} onClick={() => pickModel(m)}>
+                        <BrandIcon model={m} size={15} /><span className="chat-model-name">{m}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            {streaming
-              ? <button className="chat-send stop" onClick={stop} title="Stop">{Ico.stop}</button>
-              : <button className="chat-send" onClick={send} disabled={!input.trim()} title="Send (Enter)">{Ico.up}</button>}
+            <div className="chat-bar-right">
+              <button className={`chat-rag${useRag ? ' on' : ''}`} onClick={toggleRag} title={useRag ? 'Using your notes as context' : 'Notes context off'}>
+                {Ico.notes}
+              </button>
+              {streaming
+                ? <button className="chat-send" onClick={stop} title="Stop">{Ico.stop}</button>
+                : <button className="chat-send" onClick={send} disabled={!input.trim()} title="Send (Enter)">{Ico.up}</button>}
+            </div>
           </div>
         </div>
       </div>
