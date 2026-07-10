@@ -3,6 +3,18 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.8.0] - 2026-07-10
+
+### Added
+- **Drawing documents.** A palette button — left of New note, and in the Create / folder-right-click menus — makes a drawing its own first-class item alongside notes and chats (`source_kind: drawing`, palette icon in the note list and search). Opening one drops a full Excalidraw canvas straight into the main content area (the way a chat opens the chat view) and **autosaves as you draw** — no Cancel/Done. The scene lives in the note's sidecar, a flattened PNG in `images/draw-<id>.png`, and the note body keeps the viewable `![drawing](…)` anchor so the raw `.md` still shows the picture. Drawings can still be embedded inside a regular note via the editor toolbar's palette button.
+
+### Changed
+- Chat view polish: a per-response copy button, a model-picker dropdown, and an empty-state glyph.
+- Chats now **title themselves from the first message** instead of staying "Untitled".
+- **⌘+ / ⌘- / ⌘0 zoom** the notebook window (there's no app menu to carry the built-in zoom roles).
+- The tray icon's left-click now opens its menu instead of toggling the notch (the click was stealing focus and instantly dismissing the menu); summon the notch from the menu's "Ask" item.
+- The notch panel gets rounded bottom corners with concave "shoulder" fillets where it meets the top of the screen.
+
 ## [1.7.0] - 2026-07-10
 
 ### Added
