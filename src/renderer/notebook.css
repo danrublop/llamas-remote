@@ -421,6 +421,11 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .draw-modal--loading { display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .draw-modal .excalidraw { width: 100%; height: 100%; }
 
+/* Standalone drawing DOCUMENT: a full-canvas Excalidraw filling the main area (like the chat view). */
+.draw-doc { flex: 1; min-height: 0; position: relative; }
+.draw-doc--loading { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.draw-doc .excalidraw { width: 100%; height: 100%; }
+
 /* Cancel / Done — pill buttons in Excalidraw's top-right slot, styled like the Library button. */
 .draw-actions { display: flex; align-items: center; gap: 6px; }
 .draw-actions__btn { display: flex; align-items: center; height: 36px; padding: 0 14px; border: 1px solid var(--hairline-strong); border-radius: 10px; background: var(--surface-card); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
@@ -430,7 +435,8 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 
 /* Re-theme Excalidraw's UI to the app palette (its vars flip automatically with data-theme,
    since the app tokens do). Canvas background comes from the scene's viewBackgroundColor. */
-.draw-modal .excalidraw {
+.draw-modal .excalidraw,
+.draw-doc .excalidraw {
   --color-primary: var(--accent);
   --color-primary-darker: var(--accent-active);
   --color-primary-darkest: var(--accent-active);

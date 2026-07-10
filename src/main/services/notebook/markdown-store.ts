@@ -113,7 +113,7 @@ export function parseEntry(text: string): ParsedFile | null {
     else if (key === 'title') e.title = unesc(val);
     else if (key === 'model') e.model = unesc(val);
     else if (key === 'source_app') e.sourceApp = unesc(val);
-    else if (key === 'source_kind') e.sourceKind = val === 'image' ? 'image' : val === 'chat' ? 'chat' : 'text';
+    else if (key === 'source_kind') e.sourceKind = val === 'image' ? 'image' : val === 'chat' ? 'chat' : val === 'drawing' ? 'drawing' : 'text';
     else if (key === 'created_at') e.createdAt = unesc(val);
     else if (key === 'image') e.imagePath = unesc(val);
     else if (key === 'pinned') e.pinned = val === 'true';

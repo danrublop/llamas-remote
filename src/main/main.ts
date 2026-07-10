@@ -42,6 +42,16 @@ import { retrieve as ragRetrieve } from './services/chat/rag';
 const DEFAULT_TEXT_MODEL = 'mistral:latest';
 const VISION_MODEL = 'llava:latest';
 
+// A chat's title comes from its opening message: first non-empty line, collapsed whitespace,
+// trimmed to a sidebar-friendly length (word boundary where possible).
+function chatTitleFrom(text: string): string {
+  const line = (text.split('\n').find((l) => l.trim()) ?? '').replace(/\s+/g, ' ').trim();
+  if (line.length <= 48) return line || 'New chat';
+  const cut = line.slice(0, 48);
+  const sp = cut.lastIndexOf(' ');
+  return (sp > 24 ? cut.slice(0, sp) : cut) + '…';
+}
+
 // Sanitize a renderer-supplied tag list before it reaches frontmatter. Tags can originate
 // from the model/clipboard, so coerce to trimmed non-empty strings, cap each tag's length
 // and the total count, and dedupe case-insensitively (first-seen casing wins).
@@ -528,8 +538,10 @@ class MainProcess {
         { type: 'separator' },
         { label: 'Quit Llamas Remote', click: () => app.quit() },
       ]);
+      // A left-click opens this menu (macOS shows the context menu on either button when one is
+      // set). Don't ALSO toggle the notch on click — that stole focus and instantly dismissed the
+      // just-opened menu. The menu's "Ask" item summons the notch instead.
       this.tray.setContextMenu(menu);
-      this.tray.on('click', () => this.toggleNotch());
     } catch (err) {
       console.warn('Failed to create tray:', err);
     }
@@ -614,6 +626,15 @@ class MainProcess {
       },
     });
     this.hardenWindow(this.notebookWindow);
+    // Cmd +/-/0 text zoom (no app menu exists to carry the built-in zoom roles).
+    const wc = this.notebookWindow.webContents;
+    wc.on('before-input-event', (e, input) => {
+      if (input.type !== 'keyDown' || !input.meta) return;
+      const k = input.key;
+      if (k === '=' || k === '+') { wc.setZoomLevel(Math.min(wc.getZoomLevel() + 0.5, 5)); e.preventDefault(); }
+      else if (k === '-' || k === '_') { wc.setZoomLevel(Math.max(wc.getZoomLevel() - 0.5, -3)); e.preventDefault(); }
+      else if (k === '0') { wc.setZoomLevel(0); e.preventDefault(); }
+    });
     // Hide the native traffic lights — the renderer draws its own (glossy, always-visible)
     // window controls in the sidebar/top bar, wired via the win:* IPC below.
     if (process.platform === 'darwin') this.notebookWindow.setWindowButtonVisibility(false);
@@ -989,11 +1010,11 @@ class MainProcess {
     });
 
     // Create an empty note from the notebook UI (New note), optionally inside a folder.
-    this.ipcHandle('notebook:create', (_e, folderId?: string, kind?: 'note' | 'chat') => {
+    this.ipcHandle('notebook:create', (_e, folderId?: string, kind?: 'note' | 'chat' | 'drawing') => {
       if (!this.notebookStore) return null;
       const id = randomUUID();
-      // A chat is just a note with source_kind=chat; it flows through the same save path.
-      this.notebookStore.save(makeEntry({ id, body: '', tags: [], model: '', sourceApp: '', sourceKind: kind === 'chat' ? 'chat' : 'text' }));
+      // A chat/drawing is just a note with source_kind=chat|drawing; same save path.
+      this.notebookStore.save(makeEntry({ id, body: '', tags: [], model: '', sourceApp: '', sourceKind: kind === 'chat' ? 'chat' : kind === 'drawing' ? 'drawing' : 'text' }));
       if (folderId) this.folderStore?.moveNote(id, folderId);
       return id;
     });
@@ -1018,6 +1039,11 @@ class MainProcess {
       }
       const model = req.model || this.routerConfig.defaultTextModel;
       const noteId = req.noteId;
+      // First message names the chat: an untitled chat gets its title from the opening line,
+      // so the sidebar shows what it's about instead of "Untitled".
+      const firstTurn = parseTranscript(this.notebookStore?.getBody(noteId) ?? '').length === 0;
+      const hasTitle = !!this.notebookStore?.list().find((n) => n.id === noteId)?.title?.trim();
+      if (firstTurn && !hasTitle) this.notebookStore?.rename(noteId, chatTitleFrom(req.text));
       const { runId, signal } = this.chatSession.begin(noteId);
       this.chatSession.emit(noteId, runId, 'chat:start', { noteId });
       try {

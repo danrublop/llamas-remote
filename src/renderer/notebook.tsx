@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrandIcon } from './model-icon';
 import { SettingsView } from './settings-view';
@@ -8,8 +8,12 @@ import { ChatView } from './chat-view';
 import type { Editor } from '@tiptap/react';
 import './notebook.css';
 
+// A drawing document renders a full Excalidraw canvas in the main area; lazy so Excalidraw
+// (~2MB) lands in its own webpack chunk, fetched only when a drawing is first opened.
+const DrawingDoc = lazy(() => import('./editor/drawing-doc'));
+
 interface NotebookMeta { prompt: string; selection: string; sourceApp?: string; model: string }
-interface NoteSummary { id: string; title: string; snippet: string; tags: string[]; sourceApp?: string; model?: string; sourceKind?: 'text' | 'image' | 'chat'; imagePath?: string; pinned: boolean; createdAt: string }
+interface NoteSummary { id: string; title: string; snippet: string; tags: string[]; sourceApp?: string; model?: string; sourceKind?: 'text' | 'image' | 'chat' | 'drawing'; imagePath?: string; pinned: boolean; createdAt: string }
 interface AIBlockMeta { blockId: string; prompt: string; model: string; commandId?: string; selection?: string; createdAt: string }
 interface DrawingMeta { drawingId: string; scene: unknown }
 interface IncomingDrawing { drawingId: string; scene: unknown; png?: string }
@@ -34,7 +38,7 @@ interface NotebookAPI {
   hide: (id: string) => Promise<void>;
   restore: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
-  createNote: (folderId?: string | null, kind?: 'note' | 'chat') => Promise<string | null>;
+  createNote: (folderId?: string | null, kind?: 'note' | 'chat' | 'drawing') => Promise<string | null>;
   foldersGet: () => Promise<FolderState>;
   createFolder: (name: string, parentId: string | null) => Promise<Folder | null>;
   renameFolder: (id: string, name: string) => Promise<void>;
@@ -101,6 +105,8 @@ const Ico = {
   table: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" /><line x1="15" y1="3" x2="15" y2="21" /></svg>,
   // Lucide pencil — the insert-drawing action.
   draw: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>,
+  // Lucide palette — the drawing document/insert action (row icon + toolbar + new-drawing button).
+  palette: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" /><circle cx="6.5" cy="12.5" r=".9" fill="currentColor" stroke="none" /><circle cx="8.5" cy="7.5" r=".9" fill="currentColor" stroke="none" /><circle cx="13.5" cy="6.5" r=".9" fill="currentColor" stroke="none" /><circle cx="17.5" cy="10.5" r=".9" fill="currentColor" stroke="none" /></svg>,
   highlight: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l-4 4v3h3l4-4" /><path d="M13 7l4 4" /><path d="M20.5 6.5a2.1 2.1 0 0 0-3-3L9 12l3 3z" /></svg>,
   spellcheck: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 8 8 12 16 4" /><path d="M3 18c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0" /></svg>,
   moon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>,
@@ -612,7 +618,7 @@ function Notebook() {
   // --- creation --------------------------------------------------------------------------
   // New note (optionally inside a folder). Persists immediately so the note can live in the
   // tree, then loads it into the editor.
-  async function newNote(folderId: string | null = null, kind: 'note' | 'chat' = 'note') {
+  async function newNote(folderId: string | null = null, kind: 'note' | 'chat' | 'drawing' = 'note') {
     streamingRef.current = false; setStreaming('idle');
     setView('notes');
     const id = await window.notebookAPI.createNote(folderId, kind).catch(() => null);
@@ -624,6 +630,7 @@ function Notebook() {
     else { setSelectedId(null); selectedRef.current = null; setTitle(''); loadEditor(''); }
   }
   const newChat = (folderId: string | null = null) => newNote(folderId, 'chat');
+  const newDrawing = (folderId: string | null = null) => newNote(folderId, 'drawing');
 
   async function newFolder(parentId: string | null = null) {
     const f = await window.notebookAPI.createFolder('New Folder', parentId).catch(() => null);
@@ -684,7 +691,7 @@ function Notebook() {
       onClick={() => selectNote(n.id)}
       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenuPos({ x: e.clientX, y: e.clientY }); setActionTarget({ kind: 'note', note: n }); }}
     >
-      <span className="row-icon">{n.pinned ? Ico.pin : n.sourceKind === 'chat' ? Ico.chat : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
+      <span className="row-icon">{n.pinned ? Ico.pin : n.sourceKind === 'chat' ? Ico.chat : n.sourceKind === 'drawing' ? Ico.palette : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
       <div className="body">
         <div className="title">{n.title || 'Untitled'}</div>
         <div className="meta">{n.createdAt && relTime(n.createdAt) ? `${relTime(n.createdAt)} · ` : ''}{n.snippet}</div>
@@ -889,6 +896,7 @@ function Notebook() {
           {view === 'notes' && streaming !== 'streaming' && (
             <div className="main-actions">
               <button onClick={() => setSearchOpen(true)} title="Search notes (⌘F)">{Ico.search}</button>
+              <button onClick={() => newDrawing(null)} title="New drawing">{Ico.palette}</button>
               <button onClick={() => newNote(null)} title="New note (⌘N)">{Ico.addNote}</button>
               <button onClick={() => newChat(null)} title="New chat">{Ico.chat}</button>
               <button onClick={toggleTheme} title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>{theme === 'dark' ? Ico.sun : Ico.moon}</button>
@@ -915,6 +923,13 @@ function Notebook() {
               onOpenNote={(id) => selectNote(id)}
               onTurnsChanged={() => window.notebookAPI.list().then(setNotes)}
             />
+          </>
+        ) : current?.sourceKind === 'drawing' ? (
+          <>
+            <input className="title-input" placeholder="Untitled drawing" value={title} onChange={(e) => onTitleChange(e.target.value)} />
+            <Suspense fallback={<div className="draw-doc draw-doc--loading">Loading canvas…</div>}>
+              <DrawingDoc key={current.id} noteId={current.id} onSaved={refresh} />
+            </Suspense>
           </>
         ) : (
         <>
@@ -981,7 +996,7 @@ function Notebook() {
             <>
               <span className="sep" />
               <button className={`ico${editor.isActive('codeBlock') ? ' active' : ''}`} onClick={toggleCode} title="Code block (pick language on the block)">{Ico.code}</button>
-              <button className="ico" onClick={insertDrawing} title="Insert drawing">{Ico.draw}</button>
+              <button className="ico" onClick={insertDrawing} title="Insert drawing">{Ico.palette}</button>
               <div className="tb-table" ref={tableBtnRef}>
                 <button className={`ico${editor.isActive('table') ? ' active' : ''}`} onClick={() => setTableMenuOpen((v) => !v)} title="Insert table">{Ico.table}</button>
                 {tableMenuOpen && (
@@ -1042,6 +1057,7 @@ function Notebook() {
                 <div className="action-title">{actionTarget.folder.name}</div>
                 <button className="action-item" onClick={() => { const id = actionTarget.folder.id; closeActions(); newNote(id); }}>{Ico.addNote} New note here</button>
                 <button className="action-item" onClick={() => { const id = actionTarget.folder.id; closeActions(); newChat(id); }}>{Ico.chat} New chat here</button>
+                <button className="action-item" onClick={() => { const id = actionTarget.folder.id; closeActions(); newDrawing(id); }}>{Ico.palette} New drawing here</button>
                 <button className="action-item" onClick={() => { const id = actionTarget.folder.id; closeActions(); newFolder(id); }}>{Ico.addFolder} New folder here</button>
                 <button className="action-item" onClick={() => { const id = actionTarget.folder.id; closeActions(); setRenamingFolder(id); }}>{Ico.folder} Rename</button>
                 <button className="action-item danger" onClick={() => { const f = actionTarget.folder; closeActions(); deleteFolder(f); }}>{Ico.trash} Delete folder</button>
@@ -1057,6 +1073,7 @@ function Notebook() {
             <div className="action-title">Create</div>
             <button className="action-item" onClick={() => { setCreateOpen(false); newNote(null); }}>{Ico.addNote} New note</button>
             <button className="action-item" onClick={() => { setCreateOpen(false); newChat(null); }}>{Ico.chat} New chat</button>
+            <button className="action-item" onClick={() => { setCreateOpen(false); newDrawing(null); }}>{Ico.palette} New drawing</button>
             <button className="action-item" onClick={() => { setCreateOpen(false); newFolder(null); }}>{Ico.addFolder} New folder</button>
           </div>
         </div>
@@ -1083,7 +1100,7 @@ function Notebook() {
               ) : results && results.length ? (
                 results.map((n) => (
                   <button key={n.id} className="search-result" onClick={() => { selectNote(n.id); closeSearch(); }}>
-                    <span className="row-icon">{n.sourceKind === 'chat' ? Ico.chat : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
+                    <span className="row-icon">{n.sourceKind === 'chat' ? Ico.chat : n.sourceKind === 'drawing' ? Ico.palette : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
                     <span className="sr-body">
                       <span className="sr-title">{n.title || 'Untitled'}</span>
                       <span className="sr-snip">{n.snippet}</span>
