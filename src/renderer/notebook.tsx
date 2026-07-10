@@ -236,8 +236,8 @@ function Notebook() {
   const [title, setTitle] = useState('');
   const [streaming, setStreaming] = useState<'idle' | 'streaming' | 'error'>('idle');
   const [streamErr, setStreamErr] = useState('');
-  const [font, setFont] = useState(localStorage.getItem('nb-font') || 'Inter');
-  const [size, setSize] = useState(localStorage.getItem('nb-size') || '16');
+  const [font] = useState(localStorage.getItem('nb-font') || 'Inter'); // wrapper base for unmarked text
+  const [size] = useState(localStorage.getItem('nb-size') || '16');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<NoteSummary[] | null>(null); // null = not searching
   const [tagFilter, setTagFilter] = useState<string | null>(null); // sidebar filtered to this tag
@@ -547,18 +547,29 @@ function Notebook() {
     }
   }, [refresh]);
 
-  // With a selection: format just that text via a textStyle mark (lives in the doc → undo/redo
-  // captures it). With no selection: set the note-wide default (wrapper CSS + persisted pref).
-  function applyFont(f: string) {
-    const sel = editor?.state.selection;
-    if (editor && sel && !sel.empty) editor.chain().focus().setFontFamily(f).run();
-    else { setFont(f); localStorage.setItem('nb-font', f); }
-  }
-  function applySize(s: string) {
-    const sel = editor?.state.selection;
-    if (editor && sel && !sel.empty) editor.chain().focus().setFontSize(`${s}px`).run();
-    else { setSize(s); localStorage.setItem('nb-size', s); }
-  }
+  // Docs-style: always write a textStyle mark. With a selection it formats that text; with an
+  // empty cursor setFontFamily/setFontSize leave a stored mark so the next typed text picks it up.
+  // The mark lives in the doc → undo/redo captures it. (`font`/`size` remain the wrapper base for
+  // any text that carries no mark.)
+  function applyFont(f: string) { editor?.chain().focus().setFontFamily(f).run(); }
+  function applySize(s: string) { editor?.chain().focus().setFontSize(`${s}px`).run(); }
+  // Re-render the toolbar on every transaction (incl. pure cursor moves) so the font/size pickers
+  // reflect the mark under the caret. Without this the component only re-renders on content change.
+  const [, bumpToolbar] = useState(0);
+  useEffect(() => {
+    if (!editor) return;
+    const tick = () => bumpToolbar((n) => n + 1);
+    editor.on('transaction', tick);
+    return () => { editor.off('transaction', tick); };
+  }, [editor]);
+  // What the toolbar controls display: the mark under the current selection/caret, falling back
+  // to the last-picked value / base. `<input type=color>` needs a #rrggbb — on-disk markdown can
+  // carry rgb()/named colors, so only surface a value we can prove is a plain 6-digit hex.
+  const asHex = (v: unknown): string | undefined => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : undefined);
+  const curFont = (editor && editor.getAttributes('textStyle').fontFamily) || font;
+  const curSize = (editor && (editor.getAttributes('textStyle').fontSize as string | undefined)?.replace('px', '')) || size;
+  const curColor = (editor && asHex(editor.getAttributes('textStyle').color)) || textColor;
+  const curHl = (editor && asHex(editor.getAttributes('highlight').color)) || hlColor;
   function applyColor(hex: string) { setTextColor(hex); editor?.chain().focus().setColor(hex).run(); }
   // Toggle the red squiggle. spellcheck lives on the contenteditable DOM node, so drive it
   // directly on the editor's view; reapply whenever the editor remounts (note switch).
@@ -986,10 +997,10 @@ function Notebook() {
         </div>
         {streaming === 'error' && <div className="streaming-tag err">{streamErr}</div>}
         <div className="toolbar">
-          <select value={font} onChange={(e) => applyFont(e.target.value)} title="Font">
+          <select value={curFont} onChange={(e) => applyFont(e.target.value)} title="Font">
             {FONTS.map((f) => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
           </select>
-          <select value={size} onChange={(e) => applySize(e.target.value)} title="Size">
+          <select value={curSize} onChange={(e) => applySize(e.target.value)} title="Size">
             {SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           {editor && (
@@ -1018,13 +1029,13 @@ function Notebook() {
                 )}
               </div>
               <label className="color-btn" title="Text color">
-                <span className="color-dot" style={{ background: textColor }} />
-                <input type="color" value={textColor} onChange={(e) => applyColor(e.target.value)} />
+                <span className="color-dot" style={{ background: curColor }} />
+                <input type="color" value={curColor} onChange={(e) => applyColor(e.target.value)} />
               </label>
               <button className={`ico${editor.isActive('highlight') ? ' active' : ''}`} onClick={toggleHighlight} title="Highlight">{Ico.highlight}</button>
               <label className="color-btn" title="Highlight color">
-                <span className="color-dot hl" style={{ background: hlColor }} />
-                <input type="color" value={hlColor} onChange={(e) => applyHlColor(e.target.value)} />
+                <span className="color-dot hl" style={{ background: curHl }} />
+                <input type="color" value={curHl} onChange={(e) => applyHlColor(e.target.value)} />
               </label>
               <span className="sep" />
               <button className={`ico${spellcheck ? ' active' : ''}`} onClick={toggleSpellcheck} title={spellcheck ? 'Spell check on' : 'Spell check off'}>{Ico.spellcheck}</button>

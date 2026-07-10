@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - The tray icon's left-click now opens its menu instead of toggling the notch (the click was stealing focus and instantly dismissing the menu); summon the notch from the menu's "Ask" item.
 - The notch panel gets rounded bottom corners with concave "shoulder" fillets where it meets the top of the screen.
 
+### Fixed
+- **Font/size/color pickers now behave like a real editor.** Changing the font, size, text color, or highlight applies only to the selected text — or, with no selection, sets a pending style that the next typed text picks up (instead of silently re-styling every note). Selecting text now shows that text's actual font, size, and colors in the toolbar.
+
 ## [1.7.0] - 2026-07-10
 
 ### Added
