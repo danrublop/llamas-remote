@@ -30,7 +30,7 @@ export interface NoteSummary {
   tags: string[];
   sourceApp?: string;
   model?: string;
-  sourceKind?: 'text' | 'image' | 'chat';
+  sourceKind?: 'text' | 'image' | 'chat' | 'drawing';
   imagePath?: string;
   pinned: boolean;
   createdAt: string;
@@ -68,7 +68,7 @@ const api = {
   restore: (id: string): Promise<void> => ipcRenderer.invoke('notebook:restore', id),
   remove: (id: string): Promise<void> => ipcRenderer.invoke('notebook:delete', id),
   /** Create an empty note (optionally inside a folder); resolves with the new note id. */
-  createNote: (folderId?: string | null, kind?: 'note' | 'chat'): Promise<string | null> => ipcRenderer.invoke('notebook:create', folderId ?? null, kind ?? 'note'),
+  createNote: (folderId?: string | null, kind?: 'note' | 'chat' | 'drawing'): Promise<string | null> => ipcRenderer.invoke('notebook:create', folderId ?? null, kind ?? 'note'),
 
   // ── Folder tree (organization) ──────────────────────────────────────────────────────
   foldersGet: (): Promise<FolderState> => ipcRenderer.invoke('folders:get'),

@@ -7,7 +7,7 @@
 
 import type { IndexRow } from './reconcile';
 
-export type SourceKind = 'text' | 'image' | 'chat';
+export type SourceKind = 'text' | 'image' | 'chat' | 'drawing';
 
 /** One saved answer. The markdown FILE is the source of truth for `body`. */
 export interface NotebookEntry {
