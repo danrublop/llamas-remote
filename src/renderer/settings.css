@@ -5,6 +5,7 @@
   --hairline: #e6e5e0;
   --hairline-strong: #cfcdc4;
   --surface: #ffffff;          /* white surface-card */
+  --hairline-soft: #efeee8;    /* subtle hover fill (matches notebook) */
   --accent: #cf2d56;           /* single brand accent */
   --accent-active: #b02545;
   --on-accent: #ffffff;
@@ -19,6 +20,7 @@
   --muted: #8f8c82;
   --hairline: #34322d;
   --hairline-strong: #46433c;
+  --hairline-soft: #2b2a26;
   --surface: #242320;
   --surface-strong: #35332e;
   --accent: #e5547a;
@@ -58,14 +60,17 @@ h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
 .row input { flex: 1; border: 1px solid var(--hairline); border-radius: 8px; padding: 8px 10px; font-size: 14px; outline: none; font-family: var(--sans); background: var(--surface); color: var(--ink); }
 .row input::placeholder { color: var(--muted); }
 .row input:focus { border-color: var(--accent); }
-.btn { font-size: 13px; font-weight: 500; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--hairline-strong); background: var(--surface); cursor: pointer; white-space: nowrap; }
-.btn:hover:not(:disabled) { background: var(--hairline); }
-.btn.primary { background: var(--ink); color: var(--on-accent); border-color: var(--ink); }
+/* Buttons: borderless, same as the sidebar's close/settings buttons (.icon-btn / .account-row) —
+   sans font, no container chrome, subtle hover fill. */
+.btn { font-family: var(--sans); font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 8px; border: none; background: none; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.btn:hover:not(:disabled) { background: var(--hairline-soft); color: var(--ink); }
+.btn.primary { color: var(--accent); }
+.btn.primary:hover:not(:disabled) { background: var(--hairline-soft); color: var(--accent-active); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .hint { font-size: 12px; color: var(--muted); }
 .set { color: #1f8a65; font-size: 12px; font-family: var(--mono); }
 .models { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { font-family: var(--mono); font-size: 11px; background: var(--surface); border: 1px solid var(--hairline); border-radius: 50px; padding: 4px 10px; }
+.chip { font-family: var(--mono); font-size: 11px; color: var(--ink-soft, var(--ink)); background: var(--hairline-soft); border-radius: 6px; padding: 3px 8px; }
 .progress { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .err { color: var(--accent-active); font-size: 12px; }
 
@@ -77,19 +82,22 @@ h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
 .settings-card { display: flex; flex-direction: column; gap: 10px; }
 .settings-card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-family: var(--mono); }
 .model-list { display: flex; flex-direction: column; gap: 8px; }
-.model-row { display: flex; align-items: center; gap: 12px; border: 1px solid var(--hairline); border-radius: 12px; padding: 10px 12px; background: var(--surface); }
+/* No container box — a flat row with a hairline divider instead of a bordered card. */
+.model-row { display: flex; align-items: center; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--hairline); }
+.model-list .model-row:last-child { border-bottom: none; }
 .model-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .model-id { font-size: 14px; font-weight: 500; color: var(--ink); font-family: var(--mono); }
 .model-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); display: flex; gap: 8px; align-items: center; }
 .vision-tag { color: var(--accent); border: 1px solid var(--accent); border-radius: 50px; padding: 0 6px; font-size: 10px; }
 .model-note { font-size: 12px; color: var(--muted); }
 .model-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-.chip-btn { font-size: 12px; font-family: var(--mono); padding: 5px 10px; border-radius: 50px; border: 1px solid var(--hairline-strong); background: var(--canvas); cursor: pointer; white-space: nowrap; }
-.chip-btn:hover:not(:disabled) { background: var(--hairline); }
-.chip-btn.on { background: var(--ink); color: var(--on-accent); border-color: var(--ink); }
-.chip-btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-.chip-btn.primary:hover:not(:disabled) { background: var(--accent-active); border-color: var(--accent-active); }
-.chip-btn.danger:hover:not(:disabled) { background: rgba(207,45,86,0.08); border-color: rgba(207,45,86,0.22); color: var(--accent-active); }
+/* Same borderless treatment as .btn (sans, subtle hover), keeping only the semantic text color. */
+.chip-btn { font-family: var(--sans); font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 8px; border: none; background: none; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.chip-btn:hover:not(:disabled) { background: var(--hairline-soft); color: var(--ink); }
+.chip-btn.on { color: var(--ink); font-weight: 600; }
+.chip-btn.primary { color: var(--accent); }
+.chip-btn.primary:hover:not(:disabled) { background: var(--hairline-soft); color: var(--accent-active); }
+.chip-btn.danger:hover:not(:disabled) { background: var(--hairline-soft); color: var(--accent-active); }
 .chip-btn:disabled { opacity: 0.45; cursor: default; }
 .fit-badge { font-size: 11px; font-family: var(--mono); padding: 3px 9px; border-radius: 50px; white-space: nowrap; flex-shrink: 0; }
 .fit-ok { background: #e4f2ea; color: #1f8a65; }

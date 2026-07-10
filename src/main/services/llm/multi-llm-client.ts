@@ -5,7 +5,7 @@
 //
 // Implements the LlmClient port so NotchController is provider-agnostic.
 
-import type { LlmClient } from '../notch/notch-controller';
+import type { LlmClient, ChatMessage } from '../notch/notch-controller';
 
 export type Provider = 'openai' | 'anthropic' | 'ollama';
 
@@ -24,7 +24,7 @@ export const CLOUD_MODELS: Record<'openai' | 'anthropic', string[]> = {
 export class MultiLlmClient implements LlmClient {
   constructor(private readonly deps: { ollama: LlmClient; openai: LlmClient; anthropic: LlmClient }) {}
 
-  async generate(opts: { model: string; prompt: string; imagePath?: string; onToken?: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
+  async generate(opts: { model: string; prompt: string; imagePath?: string; messages?: ChatMessage[]; system?: string; onToken?: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
     const { provider, id } = parseModel(opts.model);
     const client = provider === 'openai' ? this.deps.openai : provider === 'anthropic' ? this.deps.anthropic : this.deps.ollama;
     return client.generate({ ...opts, model: id });

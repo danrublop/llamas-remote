@@ -4,7 +4,7 @@
 import axios from 'axios';
 import { readFileSync } from 'fs';
 import { extname } from 'path';
-import type { LlmClient } from '../notch/notch-controller';
+import type { LlmClient, ChatMessage } from '../notch/notch-controller';
 import { readStreamErrorMessage } from './stream-error';
 import { withRetry } from './retry';
 
@@ -23,15 +23,19 @@ function buildContent(prompt: string, imagePath?: string): unknown {
 export class OpenAiLlmClient implements LlmClient {
   constructor(private readonly getKey: () => string | undefined) {}
 
-  async generate(opts: { model: string; prompt: string; imagePath?: string; onToken?: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
+  async generate(opts: { model: string; prompt: string; imagePath?: string; messages?: ChatMessage[]; system?: string; onToken?: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
     const key = this.getKey();
     if (!key) throw new Error('No OpenAI API key — add one in Settings.');
+    // Multi-turn: system (if any) + full history. Single-prompt: one user turn (may be multimodal).
+    const messages = opts.messages
+      ? [...(opts.system ? [{ role: 'system', content: opts.system }] : []), ...opts.messages]
+      : [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }];
     try {
       // Retry only the request-establishment call — never the stream read below (see retry.ts).
       const res = await withRetry(
         () => axios.post(
           'https://api.openai.com/v1/chat/completions',
-          { model: opts.model, messages: [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }], stream: true },
+          { model: opts.model, messages, stream: true },
           { headers: { Authorization: `Bearer ${key}` }, responseType: 'stream', timeout: 120000, signal: opts.signal },
         ),
         { signal: opts.signal },

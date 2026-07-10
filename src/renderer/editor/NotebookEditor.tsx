@@ -11,17 +11,23 @@
 //
 // Markdown is the on-disk format: load via setContent(md, markdown), save via getMarkdown().
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor, EditorContent, ReactNodeViewRenderer, type Editor } from '@tiptap/react';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { AiBlock } from './ai-block';
 import { AiBlockView } from './ai-block-view';
 import { CodeBlockView } from './code-block-view';
+import { Drawing } from './drawing';
+import { DrawingView } from './drawing-view';
 import { notebookExtensions, lowlight } from './extensions';
 import { markdownToDoc } from './reconstruct';
-import { setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown, collectAiBlocks } from './doc-helpers';
+import { setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown, collectAiBlocks, collectDrawings, setDrawingScene } from './doc-helpers';
 import { mergeCommands, filterCommands, type SlashCommand } from '../../main/services/presets/slash-commands';
 import type { AIBlockMeta } from '../../main/services/notebook/sidecar';
+import type { DrawingMeta, IncomingDrawing } from '../../main/services/notebook/drawing-sidecar';
+
+// Excalidraw (~2MB) is code-split into its own chunk, fetched only when a drawing first opens.
+const DrawingModal = lazy(() => import('./drawing-modal'));
 
 // The inline-generation slice of window.notebookAPI (preload-notebook.ts).
 interface GenerateApi {
@@ -51,6 +57,12 @@ const CodeBlockWithView = CodeBlockLowlight.extend({
   },
 }).configure({ lowlight });
 
+const DrawingWithView = Drawing.extend({
+  addNodeView() {
+    return ReactNodeViewRenderer(DrawingView);
+  },
+});
+
 export interface NotebookEditorProps {
   /**
    * Id of the note this editor holds. Saves are keyed to THIS id (not whatever is currently
@@ -62,6 +74,8 @@ export interface NotebookEditorProps {
   markdown: string;
   /** AI-block metadata (from the note's sidecar) used to reconstruct AI blocks on load. */
   aiBlocks?: AIBlockMeta[];
+  /** Drawing scenes (from the note's sidecar) used to reconstruct drawings on load. */
+  drawings?: DrawingMeta[];
   /** Model id to use for generation (per-note / picker selection). */
   model?: string;
   /** User-defined slash commands (from settings); merged after the built-ins. */
@@ -70,7 +84,7 @@ export interface NotebookEditorProps {
    * Called (debounced/flushed) when the body changes, with the owning note id, current
    * Markdown, and the AI blocks now in the doc (so the parent can persist the sidecar).
    */
-  onChange?: (noteId: string | null, markdown: string, aiBlocks: Array<Omit<AIBlockMeta, 'createdAt'>>) => void;
+  onChange?: (noteId: string | null, markdown: string, aiBlocks: Array<Omit<AIBlockMeta, 'createdAt'>>, drawings: IncomingDrawing[]) => void;
   /** Receives the live editor instance (for parent-rendered toolbar controls). */
   onEditorReady?: (editor: Editor | null) => void;
 }
@@ -88,14 +102,39 @@ interface MenuState {
 
 const CLOSED: MenuState = { open: false, query: '', left: 0, top: 0, index: 0, from: 0 };
 
-export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
+// Right-click / two-finger-tap menu for tables (Docs-style row/column ops). Every action below
+// is a stock TipTap Table command — this is UI only, no schema change.
+interface TableMenuState { open: boolean; left: number; top: number; }
+const TABLE_CLOSED: TableMenuState = { open: false, left: 0, top: 0 };
+type TableAction = { label: string; run: (e: Editor) => void } | 'sep';
+const TABLE_ACTIONS: TableAction[] = [
+  { label: 'Insert column left', run: (e) => e.chain().focus().addColumnBefore().run() },
+  { label: 'Insert column right', run: (e) => e.chain().focus().addColumnAfter().run() },
+  { label: 'Delete column', run: (e) => e.chain().focus().deleteColumn().run() },
+  'sep',
+  { label: 'Insert row above', run: (e) => e.chain().focus().addRowBefore().run() },
+  { label: 'Insert row below', run: (e) => e.chain().focus().addRowAfter().run() },
+  { label: 'Delete row', run: (e) => e.chain().focus().deleteRow().run() },
+  'sep',
+  { label: 'Toggle header row', run: (e) => e.chain().focus().toggleHeaderRow().run() },
+  { label: 'Merge cells', run: (e) => e.chain().focus().mergeCells().run() },
+  { label: 'Split cell', run: (e) => e.chain().focus().splitCell().run() },
+  'sep',
+  { label: 'Delete table', run: (e) => e.chain().focus().deleteTable().run() },
+];
+
+export function NotebookEditor({ noteId, markdown, aiBlocks = [], drawings = [], model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
   const [menu, setMenu] = useState<MenuState>(CLOSED);
+  const [tableMenu, setTableMenu] = useState<TableMenuState>(TABLE_CLOSED);
+  // The drawing currently open in the Excalidraw modal (id + its scene), or null when closed.
+  const [drawEdit, setDrawEdit] = useState<{ drawingId: string; scene: unknown } | null>(null);
   const buffers = useRef<Map<string, string>>(new Map());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Latest un-persisted body + AI blocks; held so we can flush them on unmount (note switch /
-  // view change / notch capture) instead of dropping the last <400ms of edits with the timer.
+  // Latest un-persisted body + AI blocks + drawings; held so we can flush them on unmount (note
+  // switch / view change / notch capture) instead of dropping the last <400ms of edits.
   const pendingMarkdown = useRef<string | null>(null);
   const pendingBlocks = useRef<Array<Omit<AIBlockMeta, 'createdAt'>>>([]);
+  const pendingDrawings = useRef<IncomingDrawing[]>([]);
   // onChange can change identity (parent useCallback deps) — keep a live ref so the once-created
   // onUpdate closure + unmount flush call the latest one.
   const onChangeRef = useRef(onChange);
@@ -112,13 +151,13 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCom
   // editor remounts per note, so the mount-time markdown/aiBlocks are the note's. markdownToDoc
   // spins up a throwaway parser, so it must not run on every render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const initialContent = useMemo(() => markdownToDoc(markdown, aiBlocks), []);
+  const initialContent = useMemo(() => markdownToDoc(markdown, aiBlocks, drawings), []);
 
   // Persist immediately, cancelling any pending debounce. Called on every note switch/unmount.
   const flushSave = useCallback(() => {
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     if (pendingMarkdown.current != null) {
-      onChangeRef.current?.(noteIdRef.current, pendingMarkdown.current, pendingBlocks.current);
+      onChangeRef.current?.(noteIdRef.current, pendingMarkdown.current, pendingBlocks.current, pendingDrawings.current);
       pendingMarkdown.current = null;
     }
   }, []);
@@ -127,20 +166,22 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCom
     // One shared schema for the live editor + the headless parse/serialize paths, with the
     // React NodeView spliced in for the AI block. Reconstruct AI blocks from the sidecar on
     // load (their anchors don't survive a plain markdown parse — see reconstruct.ts).
-    extensions: notebookExtensions({ aiBlock: AiBlockWithView, codeBlock: CodeBlockWithView }),
+    extensions: notebookExtensions({ aiBlock: AiBlockWithView, codeBlock: CodeBlockWithView, drawing: DrawingWithView }),
     content: initialContent,
     onUpdate: ({ editor }) => {
       if (onChangeRef.current) {
         const md = editor.getMarkdown();
         const blocks = collectAiBlocks(editor);
+        const draws = collectDrawings(editor);
         const id = noteIdRef.current;
         pendingMarkdown.current = md;
         pendingBlocks.current = blocks;
+        pendingDrawings.current = draws;
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(() => {
           saveTimer.current = null;
           pendingMarkdown.current = null;
-          onChangeRef.current?.(id, md, blocks);
+          onChangeRef.current?.(id, md, blocks, draws);
         }, 400);
       }
       detectSlash();
@@ -221,6 +262,39 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCom
     };
   }, [editor, model]);
 
+  // ---- drawings: open the Excalidraw modal (from the NodeView or the toolbar insert) -------
+  useEffect(() => {
+    if (!editor) return;
+    (editor.storage as { drawing?: { onEdit?: (id: string) => void } }).drawing!.onEdit = (drawingId: string) => {
+      let scene: unknown = null;
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === 'drawing' && node.attrs.drawingId === drawingId) { scene = node.attrs.scene ?? null; return false; }
+        return true;
+      });
+      setDrawEdit({ drawingId, scene });
+    };
+  }, [editor]);
+
+  const saveDrawing = useCallback((scene: unknown, png: string) => {
+    if (editor && drawEdit) setDrawingScene(editor, drawEdit.drawingId, scene, png);
+    setDrawEdit(null);
+  }, [editor, drawEdit]);
+
+  // Cancel: if this was a freshly-inserted drawing the user never drew on, remove the empty
+  // node so it doesn't leave a stray placeholder box behind.
+  const closeDrawing = useCallback(() => {
+    if (editor && drawEdit && !drawEdit.scene) {
+      let pos = -1, size = 0;
+      editor.state.doc.descendants((node, p) => {
+        if (pos >= 0) return false;
+        if (node.type.name === 'drawing' && node.attrs.drawingId === drawEdit.drawingId) { pos = p; size = node.nodeSize; return false; }
+        return true;
+      });
+      if (pos >= 0) editor.view.dispatch(editor.state.tr.delete(pos, pos + size));
+    }
+    setDrawEdit(null);
+  }, [editor, drawEdit]);
+
   // ---- streaming wiring ----------------------------------------------------------------
   useEffect(() => {
     if (!editor) return;
@@ -247,7 +321,7 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCom
       // A completed AI block is a real edit — persist it now (also clears any pending debounce).
       pendingMarkdown.current = null;
       if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
-      onChangeRef.current?.(noteIdRef.current, editor.getMarkdown(), collectAiBlocks(editor));
+      onChangeRef.current?.(noteIdRef.current, editor.getMarkdown(), collectAiBlocks(editor), collectDrawings(editor));
     });
     const offErr = api.onGenError(({ blockId }) => {
       setAiBlockAttrs(editor, blockId, { state: 'error' });
@@ -265,9 +339,36 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], model, userCom
     else if (e.key === 'Escape') { e.preventDefault(); setMenu(CLOSED); }
   };
 
+  // Open the table menu only when the caret is inside a table; elsewhere let the default happen.
+  const onContextMenu = (e: React.MouseEvent) => {
+    if (!editor?.isActive('table')) return;
+    e.preventDefault();
+    setTableMenu({ open: true, left: e.clientX, top: e.clientY });
+  };
+
   return (
-    <div className="nb-editor" onKeyDown={onKeyDown}>
+    <div className="nb-editor" onKeyDown={onKeyDown} onContextMenu={onContextMenu}>
       <EditorContent editor={editor} className="nb-editor__content" />
+      {drawEdit && (
+        <Suspense fallback={<div className="draw-overlay"><div className="draw-modal draw-modal--loading">Loading canvas…</div></div>}>
+          <DrawingModal initialScene={drawEdit.scene} onSave={saveDrawing} onClose={closeDrawing} />
+        </Suspense>
+      )}
+      {tableMenu.open && editor && (
+        <>
+          <div className="ctx-backdrop" onMouseDown={() => setTableMenu(TABLE_CLOSED)} onContextMenu={(e) => { e.preventDefault(); setTableMenu(TABLE_CLOSED); }} />
+          <div className="ctx-menu" style={{ position: 'fixed', left: tableMenu.left, top: tableMenu.top }} role="menu">
+            {TABLE_ACTIONS.map((a, i) => a === 'sep'
+              ? <div key={i} className="ctx-sep" />
+              : (
+                <button key={a.label} type="button" role="menuitem" className="ctx-item"
+                  onMouseDown={(ev) => { ev.preventDefault(); a.run(editor); setTableMenu(TABLE_CLOSED); }}>
+                  {a.label}
+                </button>
+              ))}
+          </div>
+        </>
+      )}
       {menu.open && results.length > 0 && (
         <div className="slash-menu" style={{ position: 'fixed', left: menu.left, top: menu.top + 4 }} role="listbox">
           {results.map((c, i) => (

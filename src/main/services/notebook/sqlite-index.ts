@@ -178,17 +178,18 @@ export class SqliteNotebookIndex implements NotebookIndex {
     // keeps this ordered scan cheap; the real search path stays capped in search().)
     const rows = this.db
       .prepare(
-        `SELECT id, title, body, tags, source_app AS sourceApp, model, image_path AS imagePath, pinned, created_at AS createdAt
+        `SELECT id, title, body, tags, source_app AS sourceApp, source_kind AS sourceKind, model, image_path AS imagePath, pinned, created_at AS createdAt
          FROM entries WHERE tombstoned = 0
          ORDER BY pinned DESC, created_at DESC`,
       )
-      .all() as Array<{ id: string; title: string | null; body: string; tags: string; sourceApp: string | null; model: string | null; imagePath: string | null; pinned: number; createdAt: string | null }>;
+      .all() as Array<{ id: string; title: string | null; body: string; tags: string; sourceApp: string | null; sourceKind: string | null; model: string | null; imagePath: string | null; pinned: number; createdAt: string | null }>;
     return rows.map((r) => ({
       id: r.id,
       title: deriveTitle(r.title, r.body),
       snippet: stripHtml(r.body).slice(0, 80),
       tags: safeParseTags(r.tags),
       sourceApp: r.sourceApp ?? undefined,
+      sourceKind: (r.sourceKind as NoteSummary['sourceKind']) ?? undefined,
       model: r.model ?? undefined,
       imagePath: r.imagePath ?? undefined,
       pinned: r.pinned === 1,

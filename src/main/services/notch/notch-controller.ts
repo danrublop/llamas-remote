@@ -14,12 +14,26 @@ import { makeEntry } from '../notebook/markdown-store';
 import type { NotebookEntry } from '../notebook/types';
 import type { CaptureResult } from '../capture/capture';
 
+/** One turn in a multi-turn conversation. */
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 /** Minimal LLM port. The real impl is MultiLlmClient (Ollama + OpenAI + Anthropic). */
 export interface LlmClient {
   generate(opts: {
     model: string;
     prompt: string;
     imagePath?: string;
+    /**
+     * Multi-turn conversation history. When present, providers send the full role-tagged
+     * array (chat mode) and `prompt`/`imagePath` are ignored. Absent → the single-`prompt`
+     * one-shot path (notch panel + inline generation) is unchanged.
+     */
+    messages?: ChatMessage[];
+    /** System prompt — RAG context / instructions. Only used alongside `messages`. */
+    system?: string;
     /** Called with each new text chunk (a delta, NOT the cumulative answer). */
     onToken?: (delta: string) => void;
     /** Abort the in-flight request (panel closed / superseded by a newer query). */

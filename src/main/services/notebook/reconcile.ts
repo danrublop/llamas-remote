@@ -46,7 +46,7 @@ export interface DiskMeta {
   title?: string;
   model?: string;
   sourceApp?: string;
-  sourceKind?: 'text' | 'image';
+  sourceKind?: 'text' | 'image' | 'chat';
   createdAt?: string;
   imagePath?: string;
   pinned?: boolean;

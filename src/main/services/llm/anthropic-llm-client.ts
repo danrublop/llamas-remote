@@ -3,7 +3,7 @@
 import axios from 'axios';
 import { readFileSync } from 'fs';
 import { extname } from 'path';
-import type { LlmClient } from '../notch/notch-controller';
+import type { LlmClient, ChatMessage } from '../notch/notch-controller';
 import { readStreamErrorMessage } from './stream-error';
 import { withRetry } from './retry';
 
@@ -22,7 +22,7 @@ function buildContent(prompt: string, imagePath?: string): unknown {
 export class AnthropicLlmClient implements LlmClient {
   constructor(private readonly getKey: () => string | undefined) {}
 
-  async generate(opts: { model: string; prompt: string; imagePath?: string; onToken?: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
+  async generate(opts: { model: string; prompt: string; imagePath?: string; messages?: ChatMessage[]; system?: string; onToken?: (delta: string) => void; signal?: AbortSignal }): Promise<string> {
     const key = this.getKey();
     if (!key) throw new Error('No Anthropic API key — add one in Settings.');
     // Per-model output ceiling. 4096 silently truncated long answers; these are the real caps.
@@ -31,12 +31,16 @@ export class AnthropicLlmClient implements LlmClient {
     // support 64k, so a flat 64000 is safe. A newly-added low-ceiling Anthropic model (e.g. a
     // future 8192-cap tier) would 400 above its cap and need special-casing here.
     const maxTokens = 64000;
+    // Multi-turn: full history + top-level system. Single-prompt: one (maybe multimodal) user turn.
+    const messages = opts.messages ?? [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }];
+    const body: Record<string, unknown> = { model: opts.model, max_tokens: maxTokens, stream: true, messages };
+    if (opts.messages && opts.system) body.system = opts.system;
     try {
       // Retry only the request-establishment call — never the stream read below (see retry.ts).
       const res = await withRetry(
         () => axios.post(
           'https://api.anthropic.com/v1/messages',
-          { model: opts.model, max_tokens: maxTokens, stream: true, messages: [{ role: 'user', content: buildContent(opts.prompt, opts.imagePath) }] },
+          body,
           {
             headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
             responseType: 'stream',

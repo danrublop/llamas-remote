@@ -7,7 +7,7 @@
 
 import type { IndexRow } from './reconcile';
 
-export type SourceKind = 'text' | 'image';
+export type SourceKind = 'text' | 'image' | 'chat';
 
 /** One saved answer. The markdown FILE is the source of truth for `body`. */
 export interface NotebookEntry {
@@ -40,6 +40,8 @@ export interface NoteSummary {
   tags: string[];
   sourceApp?: string;
   model?: string;
+  /** 'chat' rows render a chat surface + message-square icon; others are notes. */
+  sourceKind?: SourceKind;
   pinned: boolean;
   createdAt: string;
   imagePath?: string;

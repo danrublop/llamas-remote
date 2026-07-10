@@ -131,9 +131,9 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .note-list { overflow-y: auto; flex: 1; padding: 4px 8px 8px; }
 .section-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 10px 8px 4px; }
 .section-label:first-child { padding-top: 2px; }
-.note-row { padding: 7px 9px; border-radius: 8px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+.note-row { padding: 7px 9px; border-radius: 8px; cursor: pointer; display: flex; gap: 8px; align-items: flex-start; }
 .note-row + .note-row { margin-top: 1px; }
-.note-row .row-icon { flex: none; display: flex; opacity: 0.85; }
+.note-row .row-icon { flex: none; display: flex; opacity: 0.85; margin-top: 2px; }
 .note-row .body { flex: 1; min-width: 0; }
 .note-row .title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .note-row .meta { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
@@ -162,7 +162,14 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .folder-row .disc.open { transform: rotate(90deg); }
 .folder-row .disc:hover { background: rgba(38,37,30,0.08); color: var(--ink); }
 .folder-row .disc svg { display: block; }
-.folder-children { }
+/* Tree guide line: a hairline under the parent folder's icon connecting its nested items
+   (--depth set inline per level). Aligns to the parent folder-icon center: 9px row pad + 7px. */
+.folder-children { position: relative; }
+.folder-children::before {
+  content: ''; position: absolute; top: 0; bottom: 4px;
+  left: calc(16px + var(--depth, 0) * 15px); width: 1px;
+  background: var(--hairline-strong); pointer-events: none;
+}
 .folder-empty { font-size: 12px; color: var(--muted-soft); padding-top: 2px; padding-bottom: 4px; font-style: italic; }
 
 /* Footer account row — opens Settings */
@@ -199,7 +206,7 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .note-meta .nm-dot { opacity: 0.5; }
 
 /* ── Tags ── quiet pills on the badge surface; chips reuse --surface-strong + --hairline */
-.tag-row { padding: 6px var(--pad-x) 0; }
+.tag-row { padding: 6px var(--pad-x) 14px; }
 .tag-editor { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .tag-chip { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 2px 0 8px; background: var(--surface-strong); border-radius: 11px; font-size: 11.5px; color: var(--ink-soft); }
 .tag-chip.static { padding: 0 8px; height: 20px; }
@@ -302,6 +309,16 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 /* Match the title's horizontal inset (--pad-x) so the body aligns with the title,
    plus bottom clearance for the floating toolbar. */
 .nb-editor__content .ProseMirror { outline: none; line-height: 1.68; padding: 10px var(--pad-x) 120px; }
+/* Per-selection font-size (the inline `[style*=font-size]` span from the size dropdown) carries a
+   tighter proportional line-height so a resized run's spacing tracks its size rather than the
+   note's default leading. Note: a line's height still can't drop below the paragraph's strut, so
+   shrinking a whole note reads best via the size dropdown with nothing selected. */
+.nb-editor__content .ProseMirror [style*="font-size"] { line-height: 1.3; }
+/* The global `* { padding: 0 }` reset strips list indentation, so restore it here (mirrors the
+   streaming-pane `.editor ul/ol` rules) — bullets/numbers need left padding to sit in the gutter. */
+.nb-editor__content .ProseMirror ul, .nb-editor__content .ProseMirror ol { margin: 0.2em 0 0.8em; padding-left: 1.5em; }
+.nb-editor__content .ProseMirror li { margin: 0.25em 0; }
+.nb-editor__content .ProseMirror li::marker { color: var(--muted); }
 .nb-editor__content .ProseMirror:focus { outline: none; }
 /* Empty-note placeholder — makes the `/` slash affordance discoverable. Pure CSS (the
    @tiptap/extension-placeholder dep isn't installed): an empty doc is a single paragraph whose
@@ -332,6 +349,13 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .slash-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: none; padding: 7px 10px; border-radius: 8px; cursor: pointer; font: inherit; color: var(--ink); }
 .slash-item.is-active { background: var(--accent); color: var(--on-accent); }
 .slash-item__badge { margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; }
+
+/* Right-click / two-finger-tap table menu */
+.ctx-backdrop { position: fixed; inset: 0; z-index: 59; }
+.ctx-menu { z-index: 60; min-width: 168px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 10px; box-shadow: 0 8px 28px rgba(38,37,30,0.16); padding: 4px; }
+.ctx-item { display: block; width: 100%; text-align: left; border: none; background: none; padding: 6px 10px; border-radius: 7px; cursor: pointer; font: inherit; color: var(--ink); }
+.ctx-item:hover { background: var(--accent); color: var(--on-accent); }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--hairline); }
 
 /* ---- editor wiring (NotebookEditor swap) ---- */
 .editor-wrap .nb-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -374,6 +398,28 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .nb-editor__content .ProseMirror th { background: var(--surface-card); font-weight: 600; text-align: left; }
 .nb-editor__content .ProseMirror .selectedCell::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--accent) 16%, transparent); pointer-events: none; }
 .nb-editor__content .ProseMirror .column-resize-handle { position: absolute; right: -1px; top: 0; bottom: 0; width: 3px; background: var(--accent); cursor: col-resize; }
+/* ── Drawings (Excalidraw) ── */
+.nb-editor__content .ProseMirror .drawing { position: relative; display: inline-block; max-width: 100%; margin: 0.6em 0; border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; background: var(--canvas-soft); line-height: 0; }
+.nb-editor__content .ProseMirror .drawing--selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.drawing__img { display: block; max-width: 100%; max-height: 520px; }
+.drawing__empty { display: flex; align-items: center; justify-content: center; min-width: 260px; min-height: 120px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+.drawing__edit { position: absolute; top: 8px; right: 8px; border: 1px solid var(--hairline-strong); background: var(--surface-card); color: var(--ink); border-radius: 7px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; opacity: 0; transition: opacity 0.12s; }
+.drawing:hover .drawing__edit, .drawing--selected .drawing__edit { opacity: 1; }
+
+/* Excalidraw modal — a centered dialog over a dimmed backdrop (NOT a full-screen takeover). */
+.draw-overlay { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(20, 19, 16, 0.42); }
+.draw-modal { width: min(1080px, 94vw); height: min(760px, 88vh); display: flex; flex-direction: column; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 14px; box-shadow: 0 24px 64px rgba(38, 37, 30, 0.34); overflow: hidden; }
+.draw-modal--loading { align-items: center; justify-content: center; color: var(--muted); }
+.draw-modal__bar { flex: none; display: flex; align-items: center; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--hairline); }
+.draw-modal__title { font-weight: 600; font-size: 13px; color: var(--ink); margin-right: auto; }
+/* Buttons match the top-right app actions (.main-actions button): borderless, rounded, muted→ink on hover. */
+.draw-modal__btn { display: flex; align-items: center; border: none; background: none; color: var(--muted); border-radius: 7px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.draw-modal__btn:hover { background: var(--hairline-soft); color: var(--ink); }
+.draw-modal__btn--primary { color: var(--accent); font-weight: 600; }
+.draw-modal__btn--primary:hover { background: var(--accent-soft); color: var(--accent); }
+.draw-modal__canvas { flex: 1; position: relative; }
+.draw-modal__canvas .excalidraw { width: 100%; height: 100%; }
+
 /* Highlighter mark (default yellow; inline background-color set for colored highlights) */
 /* Highlights sit on light-toned backgrounds in both themes, so pin the text dark for contrast. */
 .nb-editor__content .ProseMirror mark { background: #ffe37a; color: #26251e; border-radius: 3px; padding: 0 2px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
@@ -400,3 +446,44 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .streaming-pane { white-space: pre-wrap; padding: 18px var(--pad-x, 32px) 110px; line-height: 1.68; color: var(--ink, #1a1a1a); overflow-y: auto; }
 .toolbar-hint { font-size: 12px; color: var(--muted); }
 .toolbar-hint code { font-family: var(--mono); background: var(--surface-strong); padding: 0 4px; border-radius: 4px; }
+
+/* ── Chat surface (source_kind=chat notes) — full-width, no bubbles ─────────── */
+.chat { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.chat-scroll { flex: 1; overflow-y: auto; padding: 14px var(--pad-x) 28px; display: flex; flex-direction: column; gap: 24px; }
+.chat-empty { margin: auto; color: var(--muted); font-size: 14px; text-align: center; }
+
+.chat-msg { display: flex; flex-direction: column; gap: 8px; }
+.chat-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15.5px; line-height: 1.75; }
+/* Assistant: plain full-width prose. User: a subtle right-aligned block. */
+.chat-msg.assistant .chat-text { color: var(--body); }
+.chat-msg.user { align-items: flex-end; }
+.chat-msg.user .chat-text { max-width: 86%; color: var(--ink); background: var(--surface-strong); border-radius: 16px; padding: 10px 15px; }
+.chat-text.streaming::after { content: '▍'; margin-left: 1px; color: var(--muted); animation: chat-blink 1.05s steps(2, start) infinite; }
+@keyframes chat-blink { 50% { opacity: 0; } }
+
+.chat-cites { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
+.chat-cites-label { font-size: 11px; color: var(--muted-soft); text-transform: uppercase; letter-spacing: 0.05em; }
+.chat-cite { font-size: 12px; color: var(--ink-soft); background: var(--hairline-soft); border: none; border-radius: 7px; padding: 3px 9px; cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-cite:hover { background: var(--accent-soft); color: var(--accent); }
+.chat-error { align-self: center; color: var(--accent-active); font-size: 12.5px; }
+.chat-hint { align-self: center; text-align: center; color: var(--muted); font-size: 12px; max-width: 480px; }
+.chat-hint code { font-family: var(--mono); font-size: 11px; background: var(--surface-strong); padding: 1px 5px; border-radius: 4px; }
+
+/* Composer dock: one rounded container — textarea over an inline toolbar (model + notes + send). */
+.chat-dock { flex: none; padding: 4px var(--pad-x) 18px; }
+.chat-box { display: flex; flex-direction: column; gap: 4px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 22px; padding: 12px 12px 9px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); transition: border-color 0.15s; }
+.chat-box:focus-within, .chat-box.active { border-color: var(--muted-soft); }
+.chat-input { resize: none; max-height: 200px; min-height: 24px; font-family: var(--sans); font-size: 15px; line-height: 1.55; color: var(--ink); background: none; border: none; outline: none; padding: 2px 4px 0; }
+.chat-input::placeholder { color: var(--muted-soft); }
+.chat-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chat-bar-left { display: flex; align-items: center; gap: 4px; }
+.chat-model { font-family: var(--sans); font-size: 12.5px; color: var(--ink-soft); background: none; border: none; border-radius: 8px; padding: 4px 6px; outline: none; cursor: pointer; max-width: 200px; }
+.chat-model:hover { background: var(--hairline-soft); }
+.chat-rag { display: inline-flex; align-items: center; gap: 5px; font-family: var(--sans); font-size: 12.5px; font-weight: 500; color: var(--muted); background: none; border: none; border-radius: 8px; padding: 4px 9px; cursor: pointer; }
+.chat-rag:hover { background: var(--hairline-soft); color: var(--ink); }
+.chat-rag.on { color: var(--accent); }
+.chat-rag.on svg { stroke: var(--accent); }
+.chat-send { flex: none; width: 32px; height: 32px; border: none; border-radius: 50%; background: var(--accent); color: var(--on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.chat-send:hover:not(:disabled) { background: var(--accent-active); }
+.chat-send:disabled { background: var(--hairline-strong); color: var(--muted-soft); cursor: default; }
+.chat-send.stop { background: var(--ink); }

@@ -113,6 +113,40 @@ export function collectAiBlocks(editor: Editor): Array<Omit<AIBlockMeta, 'create
   return blocks;
 }
 
+/**
+ * Collect the drawings currently in the doc as { drawingId, scene }, in document order — the
+ * SAVE side of drawing persistence (mirrors collectAiBlocks). The live doc is authoritative for
+ * which drawings exist, so the sidecar is rewritten from exactly these. Drawings without a real
+ * id are skipped (they can't be keyed to an anchor).
+ */
+export function collectDrawings(editor: Editor): Array<{ drawingId: string; scene: unknown; png?: string }> {
+  const out: Array<{ drawingId: string; scene: unknown; png?: string }> = [];
+  editor.state.doc.descendants((node) => {
+    if (node.type.name !== 'drawing') return true;
+    const a = node.attrs as { drawingId?: string | null; scene?: unknown; png?: string | null };
+    if (typeof a.drawingId === 'string' && a.drawingId.length) {
+      out.push({ drawingId: a.drawingId, scene: a.scene ?? null, png: a.png ?? undefined });
+    }
+    return false; // drawings are atoms — nothing to descend into
+  });
+  return out;
+}
+
+/** Replace a drawing node's scene + preview PNG (after the user edits it in the Excalidraw modal). */
+export function setDrawingScene(editor: Editor, drawingId: string, scene: unknown, png: string): boolean {
+  let pos = -1;
+  let attrs: Record<string, unknown> = {};
+  editor.state.doc.descendants((node, p) => {
+    if (pos >= 0) return false;
+    if (node.type.name === 'drawing' && node.attrs.drawingId === drawingId) { pos = p; attrs = { ...node.attrs }; return false; }
+    return true;
+  });
+  if (pos < 0) return false;
+  const { state, view } = editor;
+  view.dispatch(state.tr.setNodeMarkup(pos, undefined, { ...attrs, scene, png }));
+  return true;
+}
+
 /** Patch an aiBlock's transient attrs (e.g. state: 'generating' | 'error' | 'done'). */
 export function setAiBlockAttrs(editor: Editor, blockId: string, attrs: Record<string, unknown>): boolean {
   const hit = findAiBlock(editor, blockId);
