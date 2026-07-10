@@ -42,8 +42,10 @@ export function DrawingView({ node, editor, selected }: NodeViewProps) {
       {preview
         ? <img className="drawing__img" src={preview} alt="drawing" draggable={false} />
         : <div className="drawing__empty">✏️ {hasScene ? 'Drawing' : 'Empty drawing'}</div>}
-      <button type="button" className="drawing__edit" contentEditable={false} onClick={edit}>
-        {preview || hasScene ? 'Edit' : 'Draw'}
+      <button type="button" className="drawing__edit" contentEditable={false} onClick={edit} title="Edit drawing" aria-label="Edit drawing">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+        </svg>
       </button>
     </NodeViewWrapper>
   );

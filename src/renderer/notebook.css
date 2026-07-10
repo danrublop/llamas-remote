@@ -118,8 +118,11 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 /* ── Item actions modal ── opened by left-clicking a note or folder (replaces hover buttons) */
 /* Transparent overlay just catches the outside click to close; the menu positions itself at the cursor. */
 .action-modal-backdrop { position: fixed; inset: 0; z-index: 61; background: transparent; }
-.action-modal { position: fixed; width: 260px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 12px; box-shadow: 0 22px 60px rgba(38,37,30,0.30); padding: 6px; display: flex; flex-direction: column; animation: sm-pop 0.12s ease-out; transform-origin: top left; }
-.action-title { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); padding: 8px 10px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Width hugs the action items (max-content), clamped so it never gets tiny or huge. */
+.action-modal { position: fixed; width: max-content; min-width: 150px; max-width: 232px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 12px; box-shadow: 0 22px 60px rgba(38,37,30,0.30); padding: 6px; display: flex; flex-direction: column; animation: sm-pop 0.12s ease-out; transform-origin: top left; }
+/* width:0 + min-width:100% keeps the (nowrap) title from stretching the menu — it fills the
+   width the items decide, and ellipsizes instead of forcing the menu wide. */
+.action-title { width: 0; min-width: 100%; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); padding: 8px 10px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .action-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: none; background: none; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-family: var(--sans); font-size: 13.5px; color: var(--ink); }
 .action-item svg { display: block; color: var(--muted); flex: none; }
 .action-item:hover { background: var(--hairline-soft); }
@@ -297,12 +300,14 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 
 .placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 40px; }
 
-/* ── Undo toast ── */
-.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50; display: flex; align-items: center; gap: 14px; padding: 10px 12px 10px 16px; background: var(--ink); color: var(--canvas); border-radius: 12px; box-shadow: 0 8px 28px rgba(38,37,30,0.24); font-size: 13px; animation: toast-in 0.18s ease-out; }
-.toast-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
-.toast-undo { background: none; border: none; color: #f18aa3; font-weight: 600; font-size: 13px; cursor: pointer; padding: 4px 8px; border-radius: 8px; font-family: var(--sans); }
-.toast-undo:hover { background: rgba(255,255,255,0.12); }
-@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+/* ── Notification banner ── top-right, frosted glass (macOS-notification style), theme-aware. */
+.toast { position: fixed; top: 16px; right: 16px; left: auto; bottom: auto; z-index: 50; display: flex; align-items: center; gap: 14px; padding: 12px 14px 12px 18px; max-width: min(420px, calc(100vw - 32px)); background: color-mix(in srgb, var(--surface-card) 68%, transparent); -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%); color: var(--ink); border: 1px solid color-mix(in srgb, var(--hairline-strong) 55%, transparent); border-radius: 16px; box-shadow: 0 12px 40px rgba(38,37,30,0.22); font-size: 13px; animation: toast-in 0.24s cubic-bezier(0.2, 0.9, 0.3, 1); }
+.toast { touch-action: pan-y; cursor: grab; user-select: none; -webkit-user-select: none; }
+.toast:active { cursor: grabbing; }
+.toast-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+.toast-undo { background: none; border: none; color: var(--accent); font-weight: 600; font-size: 13px; cursor: pointer; padding: 4px 8px; border-radius: 8px; font-family: var(--sans); }
+.toast-undo:hover { background: var(--accent-soft); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-10px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
 /* ---- TipTap notebook editor (NotebookEditor.tsx) — additive, graphite per design review ---- */
 .nb-editor { position: relative; }
@@ -403,22 +408,71 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .nb-editor__content .ProseMirror .drawing--selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 .drawing__img { display: block; max-width: 100%; max-height: 520px; }
 .drawing__empty { display: flex; align-items: center; justify-content: center; min-width: 260px; min-height: 120px; color: var(--muted); font-size: 13px; line-height: 1.4; }
-.drawing__edit { position: absolute; top: 8px; right: 8px; border: 1px solid var(--hairline-strong); background: var(--surface-card); color: var(--ink); border-radius: 7px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; opacity: 0; transition: opacity 0.12s; }
+/* Edit affordance: a plain SVG icon button, revealed on hover (mirrors .main-actions button). */
+.drawing__edit { position: absolute; top: 6px; right: 6px; display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: none; border-radius: 7px; background: color-mix(in srgb, var(--surface-card) 82%, transparent); color: var(--muted); cursor: pointer; opacity: 0; transition: opacity 0.12s, color 0.12s, background 0.12s; }
+.drawing__edit svg { display: block; }
+.drawing__edit:hover { background: var(--surface-card); color: var(--ink); }
 .drawing:hover .drawing__edit, .drawing--selected .drawing__edit { opacity: 1; }
 
-/* Excalidraw modal — a centered dialog over a dimmed backdrop (NOT a full-screen takeover). */
+/* Excalidraw modal — a centered dialog over a dimmed backdrop (NOT a full-screen takeover). The
+   canvas fills the whole card; Cancel/Done render inside Excalidraw's own top-right slot. */
 .draw-overlay { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(20, 19, 16, 0.42); }
-.draw-modal { width: min(1080px, 94vw); height: min(760px, 88vh); display: flex; flex-direction: column; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 14px; box-shadow: 0 24px 64px rgba(38, 37, 30, 0.34); overflow: hidden; }
-.draw-modal--loading { align-items: center; justify-content: center; color: var(--muted); }
-.draw-modal__bar { flex: none; display: flex; align-items: center; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--hairline); }
-.draw-modal__title { font-weight: 600; font-size: 13px; color: var(--ink); margin-right: auto; }
-/* Buttons match the top-right app actions (.main-actions button): borderless, rounded, muted→ink on hover. */
-.draw-modal__btn { display: flex; align-items: center; border: none; background: none; color: var(--muted); border-radius: 7px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
-.draw-modal__btn:hover { background: var(--hairline-soft); color: var(--ink); }
-.draw-modal__btn--primary { color: var(--accent); font-weight: 600; }
-.draw-modal__btn--primary:hover { background: var(--accent-soft); color: var(--accent); }
-.draw-modal__canvas { flex: 1; position: relative; }
-.draw-modal__canvas .excalidraw { width: 100%; height: 100%; }
+.draw-modal { position: relative; width: min(1080px, 94vw); height: min(760px, 88vh); background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 14px; box-shadow: 0 24px 64px rgba(38, 37, 30, 0.34); overflow: hidden; }
+.draw-modal--loading { display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.draw-modal .excalidraw { width: 100%; height: 100%; }
+
+/* Cancel / Done — pill buttons in Excalidraw's top-right slot, styled like the Library button. */
+.draw-actions { display: flex; align-items: center; gap: 6px; }
+.draw-actions__btn { display: flex; align-items: center; height: 36px; padding: 0 14px; border: 1px solid var(--hairline-strong); border-radius: 10px; background: var(--surface-card); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
+.draw-actions__btn:hover { background: var(--hairline-soft); }
+.draw-actions__btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.draw-actions__btn--primary:hover { background: var(--accent-active); border-color: var(--accent-active); }
+
+/* Re-theme Excalidraw's UI to the app palette (its vars flip automatically with data-theme,
+   since the app tokens do). Canvas background comes from the scene's viewBackgroundColor. */
+.draw-modal .excalidraw {
+  --color-primary: var(--accent);
+  --color-primary-darker: var(--accent-active);
+  --color-primary-darkest: var(--accent-active);
+  --color-primary-hover: var(--accent-active);
+  --color-primary-light: var(--accent-soft);
+  --island-bg-color: var(--surface-card);
+  --default-bg-color: var(--surface-card);
+  --popup-bg-color: var(--surface-card);
+  --input-bg-color: var(--canvas-soft);
+  --dialog-border-color: var(--hairline-strong);
+  --button-hover-bg: var(--hairline-soft);
+  --color-surface-lowest: var(--canvas-soft);
+  --color-surface-low: var(--surface-card);
+  --color-surface-mid: var(--hairline-soft);
+  --color-surface-high: var(--hairline);
+  --color-surface-primary-container: var(--accent-soft);
+}
+
+/* Help ("?") — Excalidraw portals dialogs to a body-level .excalidraw-modal-container (a sibling
+   of .draw-modal, NOT inside it), so target it globally and pin it to the modal's right edge with
+   the same sizing formulas the modal uses. Result: a scrollable side panel docked on the right. */
+.excalidraw-modal-container:has(.HelpDialog) { background: transparent; pointer-events: none; }
+/* Higher specificity + !important to beat Excalidraw's runtime-injected .Dialog rules (its lazy
+   CSS chunk loads AFTER this file, so on equal specificity it would otherwise win the left/right). */
+.excalidraw-modal-container .HelpDialog.Dialog {
+  pointer-events: auto;
+  position: fixed !important;
+  left: auto !important; bottom: auto !important;
+  top: calc((100vh - min(760px, 88vh)) / 2) !important;
+  height: min(760px, 88vh) !important;
+  right: calc((100vw - min(1080px, 94vw)) / 2) !important;
+  width: min(400px, 42vw) !important;
+  max-width: 400px !important; max-height: min(760px, 88vh) !important;
+  margin: 0 !important; transform: none !important;
+  border-radius: 0 14px 14px 0;
+  border-left: 1px solid var(--hairline);
+  box-shadow: -12px 0 32px rgba(38, 37, 30, 0.22);
+  display: flex; flex-direction: column;
+}
+.excalidraw-modal-container .HelpDialog.Dialog .Dialog__content { flex: 1; min-height: 0; max-height: none; height: auto; overflow-y: auto; overflow-x: auto; }
+/* Narrow panel: stack the Tools/Editor columns instead of two-up. */
+.HelpDialog__islands-container { grid-template-columns: 1fr !important; }
 
 /* Highlighter mark (default yellow; inline background-color set for colored highlights) */
 /* Highlights sit on light-toned backgrounds in both themes, so pin the text dark for contrast. */
@@ -450,21 +504,25 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 /* ── Chat surface (source_kind=chat notes) — full-width, no bubbles ─────────── */
 .chat { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .chat-scroll { flex: 1; overflow-y: auto; padding: 14px var(--pad-x) 28px; display: flex; flex-direction: column; gap: 24px; }
-.chat-empty { margin: auto; color: var(--muted); font-size: 14px; text-align: center; }
+.chat-empty { margin: auto; color: var(--muted); font-size: 14px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.chat-empty-glyph { color: var(--ink-soft); opacity: 0.85; }
 
 .chat-msg { display: flex; flex-direction: column; gap: 8px; }
 .chat-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15.5px; line-height: 1.75; }
 /* Assistant: plain full-width prose. User: a subtle right-aligned block. */
 .chat-msg.assistant .chat-text { color: var(--body); }
 .chat-msg.user { align-items: flex-end; }
-.chat-msg.user .chat-text { max-width: 86%; color: var(--ink); background: var(--surface-strong); border-radius: 16px; padding: 10px 15px; }
-.chat-text.streaming::after { content: '▍'; margin-left: 1px; color: var(--muted); animation: chat-blink 1.05s steps(2, start) infinite; }
+.chat-msg.user .chat-text { max-width: 86%; color: var(--ink); background: var(--surface-strong); border-radius: 9px; padding: 6px 11px; }
+.chat-text.streaming::after { content: ''; display: inline-block; width: 9px; height: 9px; margin-left: 4px; border-radius: 50%; background: var(--ink); vertical-align: baseline; animation: chat-blink 1.05s steps(2, start) infinite; }
 @keyframes chat-blink { 50% { opacity: 0; } }
 
 .chat-cites { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
 .chat-cites-label { font-size: 11px; color: var(--muted-soft); text-transform: uppercase; letter-spacing: 0.05em; }
 .chat-cite { font-size: 12px; color: var(--ink-soft); background: var(--hairline-soft); border: none; border-radius: 7px; padding: 3px 9px; cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-cite:hover { background: var(--accent-soft); color: var(--accent); }
+.chat-actions { display: flex; gap: 4px; margin-top: 2px; }
+.chat-copy { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; color: var(--muted); background: none; border: none; border-radius: 7px; padding: 0; cursor: pointer; }
+.chat-copy:hover { background: var(--hairline-soft); color: var(--ink); }
 .chat-error { align-self: center; color: var(--accent-active); font-size: 12.5px; }
 .chat-hint { align-self: center; text-align: center; color: var(--muted); font-size: 12px; max-width: 480px; }
 .chat-hint code { font-family: var(--mono); font-size: 11px; background: var(--surface-strong); padding: 1px 5px; border-radius: 4px; }
@@ -477,13 +535,22 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .chat-input::placeholder { color: var(--muted-soft); }
 .chat-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .chat-bar-left { display: flex; align-items: center; gap: 4px; }
-.chat-model { font-family: var(--sans); font-size: 12.5px; color: var(--ink-soft); background: none; border: none; border-radius: 8px; padding: 4px 6px; outline: none; cursor: pointer; max-width: 200px; }
+.chat-bar-right { display: flex; align-items: center; gap: 4px; }
+.chat-model-pick { position: relative; }
+.chat-model { display: inline-flex; align-items: center; gap: 6px; font-family: var(--sans); font-size: 12.5px; color: var(--ink-soft); background: none; border: none; border-radius: 8px; padding: 4px 7px; outline: none; cursor: pointer; max-width: 220px; }
 .chat-model:hover { background: var(--hairline-soft); }
-.chat-rag { display: inline-flex; align-items: center; gap: 5px; font-family: var(--sans); font-size: 12.5px; font-weight: 500; color: var(--muted); background: none; border: none; border-radius: 8px; padding: 4px 9px; cursor: pointer; }
+.chat-model svg:last-child { color: var(--muted-soft); flex: none; }
+.chat-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-model-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-soft); flex: none; }
+.chat-model-menu { position: absolute; bottom: calc(100% + 6px); left: 0; min-width: 200px; max-width: 300px; max-height: 300px; overflow-y: auto; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 12px; padding: 5px; box-shadow: 0 8px 24px rgba(0,0,0,0.14); z-index: 20; }
+.chat-model-opt { display: flex; align-items: center; gap: 8px; width: 100%; font-family: var(--sans); font-size: 12.5px; color: var(--ink); background: none; border: none; border-radius: 8px; padding: 6px 8px; cursor: pointer; text-align: left; }
+.chat-model-opt:hover { background: var(--hairline-soft); }
+.chat-model-opt.on { color: var(--accent); background: var(--accent-soft); }
+.chat-model-opt .chat-model-name { flex: 1; }
+.chat-rag { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; color: var(--muted); background: none; border: none; border-radius: 50%; padding: 0; cursor: pointer; }
 .chat-rag:hover { background: var(--hairline-soft); color: var(--ink); }
 .chat-rag.on { color: var(--accent); }
 .chat-rag.on svg { stroke: var(--accent); }
 .chat-send { flex: none; width: 32px; height: 32px; border: none; border-radius: 50%; background: var(--accent); color: var(--on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .chat-send:hover:not(:disabled) { background: var(--accent-active); }
 .chat-send:disabled { background: var(--hairline-strong); color: var(--muted-soft); cursor: default; }
-.chat-send.stop { background: var(--ink); }

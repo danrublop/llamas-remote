@@ -1,4 +1,5 @@
-// The full-screen Excalidraw canvas, shown when a drawing is inserted or double-clicked.
+// The Excalidraw canvas modal, shown when a drawing is inserted or double-clicked. Cancel/Done
+// render inside Excalidraw's own top-right UI slot (beside Library) — there is no header bar.
 //
 // This module is lazy-loaded (NotebookEditor wraps it in React.lazy), so Excalidraw's ~2MB of
 // JS/CSS lands in a separate webpack chunk fetched only when a drawing is first opened — the
@@ -58,23 +59,32 @@ export default function DrawingModal({ initialScene, onSave, onClose }: DrawingM
   };
 
   // Match the notebook's current theme so the canvas isn't a white slab in dark mode.
-  const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  const root = document.documentElement;
+  const theme = root.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  // New drawings default to the note's own canvas color so the exported PNG blends into the page.
+  // Only in light mode: Excalidraw's dark theme inverts the canvas via a filter, so a dark bg
+  // would flip to light — in dark mode we let Excalidraw render its native (already-dark) canvas.
+  const appBg = getComputedStyle(root).getPropertyValue('--canvas').trim() || '#f7f7f4';
+  const initialData = (initialScene as never)
+    ?? ((theme === 'light' ? { appState: { viewBackgroundColor: appBg } } : undefined) as never);
+
+  // Cancel / Done live in Excalidraw's own top-right slot (beside Library) — no separate header bar.
+  const topRight = () => (
+    <div className="draw-actions">
+      <button type="button" className="draw-actions__btn" onClick={onClose}>Cancel</button>
+      <button type="button" className="draw-actions__btn draw-actions__btn--primary" onClick={() => void save()}>Done</button>
+    </div>
+  );
 
   return (
     <div className="draw-overlay">
       <div className="draw-modal" role="dialog" aria-modal="true">
-        <div className="draw-modal__bar">
-          <span className="draw-modal__title">Drawing</span>
-          <button type="button" className="draw-modal__btn" onClick={onClose}>Cancel</button>
-          <button type="button" className="draw-modal__btn draw-modal__btn--primary" onClick={() => void save()}>Done</button>
-        </div>
-        <div className="draw-modal__canvas">
-          <Excalidraw
-            theme={theme}
-            initialData={(initialScene as never) ?? undefined}
-            excalidrawAPI={(api) => { apiRef.current = api as unknown as ExApi; }}
-          />
-        </div>
+        <Excalidraw
+          theme={theme}
+          initialData={initialData}
+          renderTopRightUI={topRight}
+          excalidrawAPI={(api) => { apiRef.current = api as unknown as ExApi; }}
+        />
       </div>
     </div>
   );

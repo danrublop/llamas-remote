@@ -159,6 +159,60 @@ function TagEditor({ tags, allTags, onChange, onFilter }: {
   );
 }
 
+// Notification banner: top-right frosted panel with an always-visible close (top-left circle,
+// brighter on hover) and swipe-right-to-dismiss — a mouse click-drag OR a trackpad two-finger
+// horizontal swipe (wheel deltaX), like macOS.
+function Toast({ msg, undo, onClose }: { msg: string; undo?: () => void; onClose: () => void }) {
+  const [dx, setDxState] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const dxRef = useRef(0);
+  const drag = useRef({ active: false, startX: 0 });
+  const wheelEnd = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const DISMISS = 80; // px of rightward travel that commits a dismiss
+
+  const setDx = (v: number) => { dxRef.current = v; setDxState(v); };
+  const dismiss = () => { setLeaving(true); setDragging(false); setDx(540); setTimeout(onClose, 220); };
+  const settle = () => { if (dxRef.current > DISMISS) dismiss(); else setDx(0); };
+
+  // Mouse / pen drag — gated on a ref so no pointermove is missed to a stale state closure.
+  const onPointerDown = (e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return; // let the close/undo buttons click
+    drag.current = { active: true, startX: e.clientX };
+    setDragging(true);
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  const onPointerMove = (e: React.PointerEvent) => { if (drag.current.active) setDx(Math.max(0, e.clientX - drag.current.startX)); };
+  const onPointerUp = () => { if (!drag.current.active) return; drag.current.active = false; setDragging(false); settle(); };
+
+  // Trackpad two-finger horizontal swipe arrives as wheel deltaX; snap back if it stops short.
+  // A rightward swipe (to dismiss) is a NEGATIVE deltaX under natural scrolling, so subtract it.
+  const onWheel = (e: React.WheelEvent) => {
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return; // vertical scroll — ignore
+    setDx(Math.max(0, Math.min(600, dxRef.current - e.deltaX)));
+    if (dxRef.current > DISMISS) return dismiss();
+    if (wheelEnd.current) clearTimeout(wheelEnd.current);
+    wheelEnd.current = setTimeout(() => setDx(0), 150);
+  };
+
+  const moved = dragging || leaving || dx !== 0;
+  return (
+    <div
+      className={`toast${leaving ? ' toast--leaving' : ''}`}
+      role="status"
+      style={moved ? { transform: `translateX(${dx}px)`, opacity: Math.max(0, 1 - dx / 260), transition: dragging ? 'none' : 'transform 0.22s ease, opacity 0.22s ease' } : undefined}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onWheel={onWheel}
+    >
+      <span className="toast-msg">{msg}</span>
+      {undo && <button className="toast-undo" onClick={undo} type="button">Undo</button>}
+    </div>
+  );
+}
+
 function Notebook() {
   const [notes, setNotes] = useState<NoteSummary[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -365,7 +419,7 @@ function Notebook() {
   // Position a context menu at the click point, nudged in from the viewport edges so it never clips.
   const menuStyle = (h: number): React.CSSProperties => ({
     position: 'fixed',
-    left: Math.max(8, Math.min(menuPos.x, window.innerWidth - 268)),
+    left: Math.max(8, Math.min(menuPos.x, window.innerWidth - 240)),
     top: Math.max(8, Math.min(menuPos.y, window.innerHeight - h - 8)),
   });
 
@@ -1045,10 +1099,7 @@ function Notebook() {
       )}
 
       {toast && (
-        <div className="toast" role="status">
-          <span className="toast-msg">{toast.msg}</span>
-          {toast.undo && <button className="toast-undo" onClick={toast.undo}>Undo</button>}
-        </div>
+        <Toast key={toast.msg} msg={toast.msg} undo={toast.undo} onClose={() => setToast(null)} />
       )}
     </div>
   );
