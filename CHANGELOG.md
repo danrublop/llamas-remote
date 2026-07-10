@@ -3,6 +3,16 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.0] - 2026-07-10
+
+### Added
+- **Drawings in notes (Excalidraw).** A pencil button in the editor toolbar inserts a drawing and opens a centered, theme-aware Excalidraw canvas — pen, shapes, arrows, text, colors, eraser, select. Double-click a drawing to reopen and keep editing. Each note's Markdown holds a viewable `![drawing](images/draw-<id>.png)` plus an invisible `<!--draw:id-->` anchor; the re-editable scene JSON lives in an `<id>.draw.json` sidecar (same truth model as AI blocks). Excalidraw is lazy-loaded into its own webpack chunk so the base notebook bundle stays lean.
+- **Table right-click menu.** Right-click (or two-finger-tap on a trackpad) inside a table opens a Google-Docs-style menu: insert/delete column, insert/delete row, toggle header row, merge/split cells, delete table — all wired to stock TipTap commands.
+
+### Changed
+- **Notifications moved to the top-right as frosted-glass banners** (macOS-style), theme-aware, with swipe-right-to-dismiss (mouse drag or trackpad two-finger horizontal swipe).
+- **Right-click note/folder menus size to their content** instead of a fixed width, so short actions (Pin / Delete) no longer leave dead space on the right.
+
 ## [1.6.1] - 2026-07-09
 
 ### Fixed
