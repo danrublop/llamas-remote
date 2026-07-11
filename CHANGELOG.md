@@ -3,6 +3,11 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.1] - 2026-07-10
+
+### Fixed
+- **Selection capture in editors without Accessibility support (e.g. Zed).** When the app falls back to a synthetic ⌘C, it now waits for the ⌘⇧Space hotkey modifiers to release first — otherwise the still-held Shift turned the copy into ⌘⇧C and captured nothing.
+
 ## [1.10.0] - 2026-07-10
 
 ### Added
