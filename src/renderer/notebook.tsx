@@ -5,6 +5,7 @@ import { SettingsView } from './settings-view';
 import { ModelsView } from './models-view';
 import { NotebookEditor } from './editor/NotebookEditor';
 import { ChatView } from './chat-view';
+import { NoteChatPanel } from './note-chat-panel';
 import type { Editor } from '@tiptap/react';
 import { searchPlugin, searchKey, headingFlagPlugin, flagKey, type SearchState } from './editor/inline-tools';
 import './notebook.css';
@@ -13,8 +14,17 @@ import './notebook.css';
 // (~2MB) lands in its own webpack chunk, fetched only when a drawing is first opened.
 const DrawingDoc = lazy(() => import('./editor/drawing-doc'));
 
+// Calendar + system dashboard are small, dependency-free React views, so they ride in the main
+// bundle rather than a lazy chunk.
+import CalendarDoc from './calendar/CalendarDoc';
+import { parseDays, serializeDays } from './calendar/day-page';
+import { applyCalOps, type CalOp } from './calendar/calendar-ops';
+import { parseDocOps, applyDocOps, hasDocOps } from './note-doc';
+import { ChatDocPane } from './chat-doc-pane';
+import SystemDashboard from './system/SystemDashboard';
+
 interface NotebookMeta { prompt: string; selection: string; sourceApp?: string; model: string }
-interface NoteSummary { id: string; title: string; snippet: string; tags: string[]; sourceApp?: string; model?: string; sourceKind?: 'text' | 'image' | 'chat' | 'drawing'; imagePath?: string; pinned: boolean; createdAt: string }
+interface NoteSummary { id: string; title: string; snippet: string; tags: string[]; sourceApp?: string; model?: string; sourceKind?: 'text' | 'image' | 'chat' | 'drawing' | 'game' | 'calendar'; imagePath?: string; pinned: boolean; createdAt: string }
 interface AIBlockMeta { blockId: string; prompt: string; model: string; commandId?: string; selection?: string; createdAt: string }
 interface DrawingMeta { drawingId: string; scene: unknown }
 interface IncomingDrawing { drawingId: string; scene: unknown; png?: string }
@@ -39,7 +49,7 @@ interface NotebookAPI {
   hide: (id: string) => Promise<void>;
   restore: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
-  createNote: (folderId?: string | null, kind?: 'note' | 'chat' | 'drawing') => Promise<string | null>;
+  createNote: (folderId?: string | null, kind?: 'note' | 'chat' | 'drawing' | 'game' | 'calendar', body?: string) => Promise<string | null>;
   foldersGet: () => Promise<FolderState>;
   createFolder: (name: string, parentId: string | null) => Promise<Folder | null>;
   renameFolder: (id: string, name: string) => Promise<void>;
@@ -49,6 +59,7 @@ interface NotebookAPI {
   minimizeWindow: () => void;
   zoomWindow: () => void;
   closeWindow: () => void;
+  openInNewWindow: (id: string) => void;
   signalReady: () => void;
   onShowSettings: (cb: () => void) => () => void;
   onSaved: (cb: (id: string) => void) => () => void;
@@ -64,6 +75,12 @@ interface NotebookAPI {
   onChatToken: (cb: (p: { noteId: string; delta: string }) => void) => () => void;
   onChatDone: (cb: (p: { noteId: string; answer: string; citations: string[]; model: string }) => void) => () => void;
   onChatError: (cb: (p: { noteId: string; error: string }) => void) => () => void;
+  // Note-side chat panel (ephemeral; renderer owns the transcript)
+  noteChatSend: (req: { noteId: string; model?: string; noteMarkdown: string; history: Array<{ role: 'user' | 'assistant'; content: string }> }) => Promise<{ ok: boolean; answer?: string; error?: string }>;
+  noteChatAbort: (noteId: string) => Promise<void>;
+  onNoteChatToken: (cb: (p: { noteId: string; delta: string }) => void) => () => void;
+  onNoteChatDone: (cb: (p: { noteId: string; answer: string; model: string }) => void) => () => void;
+  onNoteChatError: (cb: (p: { noteId: string; error: string }) => void) => () => void;
 }
 interface ChatTurn { role: 'user' | 'assistant'; content: string; model?: string; cites?: string[]; ts?: string }
 declare global { interface Window { notebookAPI: NotebookAPI } }
@@ -84,8 +101,49 @@ const FONTS = [
   'Chalkboard SE', 'Noteworthy', 'Snell Roundhand', 'Papyrus',
 ];
 const SIZES = ['12', '14', '16', '18', '20', '24', '28', '32'];
-// Section-flag palette (sparkle in the heading gutter → picks one of these).
+// Sidebar drag bounds. Named because the default width is the minimum — keep the two in step.
+const SIDEBAR_MIN = 200, SIDEBAR_MAX = 520;
+// Section-flag palette (bookmark in the heading gutter → picks one of these).
 const FLAG_COLORS = ['#e5484d', '#f5a623', '#f2d64b', '#30a46c', '#3b82f6', '#8b5cf6', '#ec4899'];
+// Preset palettes for the toolbar text-color / highlight menus; the wheel button covers anything else.
+const TEXT_PALETTE = ['#26251e', '#e5484d', '#f5a623', '#30a46c', '#3b82f6', '#8b5cf6', '#ec4899', '#8a7d65'];
+const HL_PALETTE = ['#ffe37a', '#ffd0d0', '#c7f0d8', '#cfe4ff', '#e6d8ff', '#ffe0c2', '#d7f0f0', '#e8e8e8'];
+
+// Toolbar color picker: a preset swatch palette plus a "wine" wheel button for a custom color.
+// onMouseDown-prevent keeps the editor selection so the mark applies to what's highlighted.
+function ColorMenu({ kind, cur, palette, onPick, onClear }: {
+  kind: 'text' | 'hl'; cur: string; palette: string[];
+  onPick: (hex: string) => void; onClear?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const norm = cur.toLowerCase();
+  return (
+    <div className="color-menu" onMouseDown={(e) => e.preventDefault()}>
+      <button className="color-btn" title={kind === 'text' ? 'Text color' : 'Highlight'} onClick={() => setOpen((v) => !v)}>
+        <span className={`color-dot${kind === 'hl' ? ' hl' : ''}`} style={{ background: cur }} />
+      </button>
+      {open && (
+        <>
+          <div className="cm-backdrop" onMouseDown={() => setOpen(false)} />
+          <div className="cm-pop">
+            <div className="cm-swatches">
+              {palette.map((c) => (
+                <button key={c} className={`cm-swatch${kind === 'hl' ? ' hl' : ''}${c.toLowerCase() === norm ? ' on' : ''}`}
+                  style={{ background: c }} title={c} onClick={() => { onPick(c); setOpen(false); }} />
+              ))}
+            </div>
+            <label className="cm-wheel" title="Custom color">
+              <span className="cm-wheel-dot" />
+              <span>Color wheel…</span>
+              <input type="color" value={cur} onChange={(e) => onPick(e.target.value)} />
+            </label>
+            {onClear && <button className="cm-clear" onClick={() => { onClear(); setOpen(false); }}>Remove</button>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 // Monochrome line icons (currentColor) for a consistent toolbar — no emoji.
 const Ico = {
@@ -94,6 +152,8 @@ const Ico = {
   copy: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
   download: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>,
   chevron: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 6 15 12 9 18" /></svg>,
+  // Lucide plus — the single "new…" entry point (note / chat / drawing).
+  plus: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
   folder: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>,
   // Lucide file-text — the note glyph in list rows.
   note: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" /></svg>,
@@ -105,6 +165,7 @@ const Ico = {
   sidebar: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" /></svg>,
   search: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>,
   code: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>,
+  inlineCode: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2.5" /><polyline points="9.5 10 7.5 12 9.5 14" /><polyline points="14.5 10 16.5 12 14.5 14" /></svg>,
   table: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" /><line x1="15" y1="3" x2="15" y2="21" /></svg>,
   // Lucide pencil — the insert-drawing action.
   draw: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>,
@@ -112,10 +173,17 @@ const Ico = {
   palette: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" /><circle cx="6.5" cy="12.5" r=".9" fill="currentColor" stroke="none" /><circle cx="8.5" cy="7.5" r=".9" fill="currentColor" stroke="none" /><circle cx="13.5" cy="6.5" r=".9" fill="currentColor" stroke="none" /><circle cx="17.5" cy="10.5" r=".9" fill="currentColor" stroke="none" /></svg>,
   highlight: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l-4 4v3h3l4-4" /><path d="M13 7l4 4" /><path d="M20.5 6.5a2.1 2.1 0 0 0-3-3L9 12l3 3z" /></svg>,
   spellcheck: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 8 8 12 16 4" /><path d="M3 18c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0" /></svg>,
+  ellipsis: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>,
   // Lucide "heading" — the make-section-title button.
   heading: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4v16" /><path d="M18 4v16" /><path d="M6 12h12" /></svg>,
   moon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>,
   sun: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="4" /><line x1="12" y1="20" x2="12" y2="22" /><line x1="4.2" y1="4.2" x2="5.6" y2="5.6" /><line x1="18.4" y1="18.4" x2="19.8" y2="19.8" /><line x1="2" y1="12" x2="4" y2="12" /><line x1="20" y1="12" x2="22" y2="12" /><line x1="4.2" y1="19.8" x2="5.6" y2="18.4" /><line x1="18.4" y1="5.6" x2="19.8" y2="4.2" /></svg>,
+  // Lucide calendar — the calendar action + calendar row icon.
+  calendar: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>,
+  // Lucide external-link — "open in new window".
+  newWindow: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>,
+  // Lucide list-todo — the insert-checklist action.
+  todo: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="6" height="6" rx="1" /><path d="m3 17 2 2 4-4" /><path d="M13 6h8" /><path d="M13 12h8" /><path d="M13 18h8" /></svg>,
 };
 
 const countWords = (text: string): number => {
@@ -124,6 +192,7 @@ const countWords = (text: string): number => {
 };
 
 const EXPANDED_KEY = 'nb-expanded';
+const CHATS_KEY = 'nb-chats-folder'; // the folder new chats land in — see chatsFolder()
 const loadExpanded = (): Set<string> => {
   try { const a = JSON.parse(localStorage.getItem(EXPANDED_KEY) || '[]'); return new Set(Array.isArray(a) ? a : []); }
   catch { return new Set(); }
@@ -226,13 +295,22 @@ function Toast({ msg, undo, onClose }: { msg: string; undo?: () => void; onClose
 
 function Notebook() {
   const [notes, setNotes] = useState<NoteSummary[]>([]);
+  const [calendarId, setCalendarId] = useState<string | null>(null); // the single pinned calendar
+  // A chat's companion document (chatId → docId): the note the agent writes in the split pane.
+  const [chatDocs, setChatDocs] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('nb-chat-docs') || '{}'); } catch { return {}; }
+  });
+  const [chatDocOpen, setChatDocOpen] = useState(false);
+  const [docReloadKey, setDocReloadKey] = useState(0); // bump to reload the pane after an agent write
   const [folders, setFolders] = useState<Folder[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Set<string>>(loadExpanded);
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('nb-sidebar') !== 'closed');
+  // Opens at its narrowest — the notes get the room until you ask otherwise. A width you've dragged
+  // to is remembered and wins over the default.
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const v = parseInt(localStorage.getItem('nb-sidebar-w') || '', 10);
-    return Number.isFinite(v) && v >= 200 && v <= 520 ? v : 300;
+    return Number.isFinite(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : SIDEBAR_MIN;
   });
   const widthRef = useRef(sidebarWidth);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
@@ -252,7 +330,7 @@ function Notebook() {
   const [createOpen, setCreateOpen] = useState(false); // "create note/folder" modal (empty-sidebar two-finger click)
   const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); // where the last context menu opened
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('nb-theme') === 'dark' ? 'dark' : 'light'));
-  const [view, setView] = useState<'notes' | 'settings'>('notes'); // right pane: editor / combined settings
+  const [view, setView] = useState<'notes' | 'settings'>('notes'); // right pane: editor / settings (system + models + keys)
   const [outlineOpen, setOutlineOpen] = useState(localStorage.getItem('nb-outline') !== 'off'); // section outline panel
   const [flagColors, setFlagColors] = useState<Record<string, string>>({}); // heading text → flag colour (per note)
   const [flagMenu, setFlagMenu] = useState<{ text: string; x: number; y: number } | null>(null);
@@ -274,6 +352,8 @@ function Notebook() {
   const [editorDrawings, setEditorDrawings] = useState<DrawingMeta[]>([]);
   const [editorKey, setEditorKey] = useState(0);
   const [editor, setEditor] = useState<Editor | null>(null); // live TipTap instance (for color/code toolbar)
+  const [chatMenuOpen, setChatMenuOpen] = useState(false); // the ＋ dropdown (new note / chat / drawing)
+  const [notePanelOpen, setNotePanelOpen] = useState(false); // right-side "chat with this note" panel
   const [textColor, setTextColor] = useState('#26251e');
   const [hlColor, setHlColor] = useState('#ffe37a');
   const [spellcheck, setSpellcheck] = useState(() => localStorage.getItem('nb-spellcheck') !== 'off');
@@ -281,6 +361,9 @@ function Notebook() {
   const [tableMenuOpen, setTableMenuOpen] = useState(false);
   const [tableHover, setTableHover] = useState({ r: 0, c: 0 });
   const tableBtnRef = useRef<HTMLDivElement>(null);
+  const [overflowOpen, setOverflowOpen] = useState(false); // toolbar "…" menu (drawing/spell/copy/export)
+  const overflowRef = useRef<HTMLDivElement>(null);
+  const chatMenuRef = useRef<HTMLDivElement>(null);
   const liveMarkdown = useRef(''); // latest editor markdown, for copy/export/word count
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -378,10 +461,24 @@ function Notebook() {
   }, [notes, loadEditor, flushRename]);
 
   useEffect(() => {
+    // Secondary "Open in new window" windows carry ?note=<id>; they view/edit only and must
+    // stay out of the notch stream handshake (signalReady) so they can't flush the primary early.
+    const noteWindowId = new URLSearchParams(location.search).get('note');
     (async () => {
-      const [list] = await Promise.all([window.notebookAPI.list(), refreshFolders(), refreshTags()]);
+      let [list] = await Promise.all([window.notebookAPI.list(), refreshFolders(), refreshTags()]);
+      // Singleton calendar: reuse the first calendar note, else create one. It's pinned in the
+      // sidebar and hidden from the regular note list, so there's only ever one.
+      let calId = list.find((n) => n.sourceKind === 'calendar')?.id ?? null;
+      if (!calId) {
+        calId = await window.notebookAPI.createNote(null, 'calendar').catch(() => null);
+        if (calId) { await window.notebookAPI.rename(calId, 'Calendar').catch(() => {}); list = await window.notebookAPI.list(); }
+      }
+      setCalendarId(calId);
       setNotes(list);
-      if (list.length) selectNote(list[0].id, list);
+      // A "?note=<id>" window (opened via "Open in new window") lands directly on that note;
+      // otherwise open the first regular note.
+      const target = (noteWindowId && list.find((n) => n.id === noteWindowId)) || list.find((n) => n.sourceKind !== 'calendar');
+      if (target) selectNote(target.id, list);
     })();
     const offStart = window.notebookAPI.onStart((m) => {
       streamingRef.current = true;
@@ -407,7 +504,8 @@ function Notebook() {
     });
     const offSettings = window.notebookAPI.onShowSettings(() => setView('settings'));
     // Listeners are attached — tell main to flush any answer buffered while we loaded.
-    window.notebookAPI.signalReady();
+    // Only the primary window drives the notch handshake (see noteWindowId note above).
+    if (!noteWindowId) window.notebookAPI.signalReady();
     return () => { offStart(); offToken(); offDone(); offErr(); offSaved(); offSettings(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -479,6 +577,28 @@ function Notebook() {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [tableMenuOpen]);
+
+  // Close the toolbar overflow ("…") menu on an outside click.
+  useEffect(() => {
+    if (!overflowOpen) return;
+    function onDown(e: MouseEvent) {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) setOverflowOpen(false);
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [overflowOpen]);
+
+  // Close the chat-button dropdown on an outside click (not mouseleave — that closes it before
+  // the cursor can travel from the button down to the menu).
+  useEffect(() => {
+    if (!chatMenuOpen) return;
+    function onDown(e: MouseEvent) {
+      if (chatMenuRef.current && !chatMenuRef.current.contains(e.target as Node)) setChatMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [chatMenuOpen]);
+
 
   // External edits to the on-disk .md files aren't noticed until relaunch — re-sync from disk on
   // window focus so returning to the app picks them up. Debounced, and skipped while a notch
@@ -669,8 +789,8 @@ function Notebook() {
   function toggleSpellcheck() {
     setSpellcheck((v) => { localStorage.setItem('nb-spellcheck', v ? 'off' : 'on'); return !v; });
   }
-  function toggleHighlight() { editor?.chain().focus().toggleHighlight({ color: hlColor }).run(); }
   function applyHlColor(hex: string) { setHlColor(hex); editor?.chain().focus().setHighlight({ color: hex }).run(); }
+  function clearHl() { editor?.chain().focus().unsetHighlight().run(); }
   // Language is picked on the block itself (in-block dropdown, see code-block-view); the
   // toolbar button just toggles the block into/out of code.
   function toggleCode() {
@@ -689,6 +809,7 @@ function Notebook() {
   function insertTable(rows: number, cols: number) {
     editor?.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run();
     setTableMenuOpen(false);
+    setOverflowOpen(false); // the picker now lives inside the … menu, so dismiss that too
   }
   // Insert an empty drawing node and immediately open the Excalidraw canvas on it (the modal
   // is owned by NotebookEditor and reached via the shared editor's `drawing.onEdit` storage).
@@ -719,10 +840,11 @@ function Notebook() {
   // --- creation --------------------------------------------------------------------------
   // New note (optionally inside a folder). Persists immediately so the note can live in the
   // tree, then loads it into the editor.
-  async function newNote(folderId: string | null = null, kind: 'note' | 'chat' | 'drawing' = 'note') {
+  async function newNote(folderId: string | null = null, kind: 'note' | 'chat' | 'drawing' | 'game' | 'calendar' = 'note', seed?: { body?: string; title?: string }) {
     streamingRef.current = false; setStreaming('idle');
     setView('notes');
-    const id = await window.notebookAPI.createNote(folderId, kind).catch(() => null);
+    const id = await window.notebookAPI.createNote(folderId, kind, seed?.body).catch(() => null);
+    if (id && seed?.title) await window.notebookAPI.rename(id, seed.title).catch(() => {});
     await refreshFolders();
     const list = await window.notebookAPI.list();
     setNotes(list);
@@ -730,7 +852,18 @@ function Notebook() {
     if (id) selectNote(id, list);
     else { setSelectedId(null); selectedRef.current = null; setTitle(''); loadEditor(''); }
   }
-  const newChat = (folderId: string | null = null) => newNote(folderId, 'chat');
+  // Where a new chat lands when you don't say. Created on first chat (not on a fresh install, which
+  // would just be an empty folder), then remembered BY ID — so renaming it to "Threads" or dragging
+  // it into another folder keeps it the default. Delete it and the next chat makes a fresh one.
+  async function chatsFolder(): Promise<string | null> {
+    const saved = localStorage.getItem(CHATS_KEY);
+    if (saved && folders.some((f) => f.id === saved)) return saved;
+    const f = await window.notebookAPI.createFolder('Chats', null).catch(() => null);
+    if (f) { localStorage.setItem(CHATS_KEY, f.id); await refreshFolders(); }
+    return f?.id ?? null;
+  }
+  // An explicit folder ("New chat here") always wins over the default.
+  const newChat = async (folderId?: string | null) => newNote(folderId ?? (await chatsFolder()), 'chat');
   const newDrawing = (folderId: string | null = null) => newNote(folderId, 'drawing');
 
   async function newFolder(parentId: string | null = null) {
@@ -773,7 +906,7 @@ function Notebook() {
   // --- tree rendering --------------------------------------------------------------------
   const sortedNotes = (arr: NoteSummary[]) => arr; // index already returns pinned-first, newest
   const notesInFolder = (folderId: string | null) =>
-    sortedNotes(notes.filter((n) => (assignments[n.id] ?? null) === folderId));
+    sortedNotes(notes.filter((n) => n.sourceKind !== 'calendar' && (assignments[n.id] ?? null) === folderId));
   const childFolders = (parentId: string | null) =>
     folders.filter((f) => f.parentId === parentId).sort((a, b) => a.name.localeCompare(b.name));
   const noteCount = (folderId: string): number => {
@@ -781,6 +914,42 @@ function Notebook() {
     for (const sub of childFolders(folderId)) c += noteCount(sub.id);
     return c;
   };
+
+  // The chat agent's calendar tools land here: read the calendar note, apply the ops the user
+  // accepted, write it back. Read-modify-write at click time (not at parse time) so the ops apply
+  // to whatever the calendar says now, rather than to what it said when the model replied.
+  const applyCalendarOps = useCallback(async (ops: CalOp[]) => {
+    if (!calendarId) return { applied: 0, failed: ops.length };
+    const body = await window.notebookAPI.getBody(calendarId);
+    const r = applyCalOps(parseDays(body ?? ''), ops);
+    await window.notebookAPI.updateBody(calendarId, serializeDays(r.days));
+    return { applied: r.applied, failed: r.failed };
+  }, [calendarId]);
+
+  // The chat agent's document tools: apply the write/edits to the companion note, creating it the
+  // first time. Read-modify-write against the note's live body so FIND/REPLACE lands around edits
+  // the user typed into the pane themselves. Fires from ChatView once per finished turn.
+  const handleChatDoc = useCallback(async (content: string) => {
+    const chatId = selectedRef.current;
+    if (!chatId) return;
+    const ops = parseDocOps(content);
+    if (!hasDocOps(ops)) return;
+    let docId: string | undefined = chatDocs[chatId];
+    if (docId && !notes.some((n) => n.id === docId)) docId = undefined; // was deleted → start over
+    const base = docId ? (await window.notebookAPI.getBody(docId).catch(() => '')) ?? '' : '';
+    const r = applyDocOps(base, ops);
+    if (!docId) {
+      docId = (await window.notebookAPI.createNote(null, 'note', r.md).catch(() => null)) ?? undefined;
+      if (!docId) return;
+      await window.notebookAPI.rename(docId, r.title || 'Document').catch(() => {});
+      setChatDocs((m) => { const n = { ...m, [chatId]: docId! }; localStorage.setItem('nb-chat-docs', JSON.stringify(n)); return n; });
+    } else {
+      await window.notebookAPI.updateBody(docId, r.md).catch(() => {});
+      if (r.title) await window.notebookAPI.rename(docId, r.title).catch(() => {});
+    }
+    setDocReloadKey((k) => k + 1);
+    window.notebookAPI.list().then(setNotes);
+  }, [chatDocs, notes]);
 
   const renderNoteRow = (n: NoteSummary, depth: number) => {
     // Sections of the OPEN note (the only note whose live doc we have) drop down under its row.
@@ -795,23 +964,10 @@ function Notebook() {
       onClick={() => selectNote(n.id)}
       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenuPos({ x: e.clientX, y: e.clientY }); setActionTarget({ kind: 'note', note: n }); }}
     >
-      <span className="row-icon">{n.pinned ? Ico.pin : n.sourceKind === 'chat' ? Ico.chat : n.sourceKind === 'drawing' ? Ico.palette : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
+      <span className="row-icon">{n.pinned ? Ico.pin : n.sourceKind === 'chat' ? Ico.chat : n.sourceKind === 'drawing' ? Ico.palette : n.sourceKind === 'calendar' ? Ico.calendar : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
       <div className="body">
         <div className="title">{n.title || 'Untitled'}</div>
-        <div className="meta">{n.createdAt && relTime(n.createdAt) ? `${relTime(n.createdAt)} · ` : ''}{n.snippet}</div>
-        {n.tags.length > 0 && (
-          <div className="row-tags">
-            {n.tags.slice(0, 3).map((t) => (
-              <button
-                key={t}
-                className={`row-tag${tagFilter && t.toLowerCase() === tagFilter.toLowerCase() ? ' active' : ''}`}
-                onClick={(e) => { e.stopPropagation(); applyTagFilter(t); }}
-                title={`Show notes tagged “${t}”`}
-              >{t}</button>
-            ))}
-            {n.tags.length > 3 && <span className="row-tag-more">+{n.tags.length - 3}</span>}
-          </div>
-        )}
+        <div className="meta">{n.createdAt ? relTime(n.createdAt) : ''}</div>
       </div>
       {showSections && (
         <button className={`sec-caret${outlineOpen ? ' open' : ''}`} onClick={(e) => { e.stopPropagation(); toggleOutline(); }} title={outlineOpen ? 'Hide sections' : 'Show sections'}>{Ico.chevron}</button>
@@ -821,7 +977,10 @@ function Notebook() {
       <button
         key={i}
         className={`section-row lvl${h.level}`}
-        style={{ paddingLeft: 9 + depth * 15 + 26 + (h.level - 1) * 12 }}
+        // --sec-x is a margin, not padding: it starts the row's box (and so its hover fill) just
+        // clear of the tree guide line at 16px + (depth-1)*15px, instead of painting over it. The
+        // padding then carries the text to the same place it always sat.
+        style={{ ['--sec-x' as string]: `${7 + depth * 15}px`, paddingLeft: 28 + (h.level - 1) * 12 }}
         onClick={() => jumpToHeading(h.pos)}
       >
         {flagColors[h.key] && <span className="sec-dot" style={{ background: flagColors[h.key] }} />}
@@ -895,6 +1054,8 @@ function Notebook() {
 
   // Metadata for the header line under the title (only for a saved, selected note).
   const current = selectedId ? notes.find((n) => n.id === selectedId) : null;
+  // A plain, editable note (not a chat/drawing) — the only kind the note-side chat panel edits.
+  const isPlainNote = view === 'notes' && streaming !== 'streaming' && !!current && current.sourceKind !== 'chat' && current.sourceKind !== 'drawing';
   function relTime(iso: string) {
     const d = new Date(iso);
     if (isNaN(d.getTime())) return '';
@@ -909,6 +1070,16 @@ function Notebook() {
     if (day < 7) return `${day}d ago`;
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
   }
+
+  // The companion document for the CURRENT chat, if it has one that still exists (a doc the user
+  // deleted from the tree drops back to none — the next agent write makes a fresh one).
+  const chatDocId =
+    current?.sourceKind === 'chat' && chatDocs[current.id] && notes.some((n) => n.id === chatDocs[current.id])
+      ? chatDocs[current.id]
+      : undefined;
+  // Open the pane automatically when the current chat has a document; closed on a chat without one.
+  // Keyed on chatDocId so a fresh agent-created doc reveals the pane; a manual close/reopen sticks.
+  useEffect(() => { setChatDocOpen(!!chatDocId); }, [chatDocId]);
 
   const setSidebar = (open: boolean) => { setSidebarOpen(open); localStorage.setItem('nb-sidebar', open ? 'open' : 'closed'); };
 
@@ -926,7 +1097,7 @@ function Notebook() {
     e.preventDefault();
     document.body.classList.add('resizing');
     const onMove = (ev: MouseEvent) => {
-      const w = Math.min(520, Math.max(200, ev.clientX));
+      const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, ev.clientX));
       widthRef.current = w;
       setSidebarWidth(w);
     };
@@ -969,6 +1140,16 @@ function Notebook() {
           onContextMenu={(e) => { if (!(e.target as HTMLElement).closest('.note-row, .folder-row, button, input')) { e.preventDefault(); setMenuPos({ x: e.clientX, y: e.clientY }); setCreateOpen(true); } }}
           title="Two-finger click empty space to create a note or folder"
         >
+          {calendarId && (
+            <button
+              className={`cal-pin${selectedId === calendarId ? ' selected' : ''}`}
+              onClick={() => selectNote(calendarId)}
+              title="Calendar"
+            >
+              <span className="row-icon">{Ico.calendar}</span>
+              <span className="cal-pin-label">Calendar</span>
+            </button>
+          )}
           {tagFilter ? (
             <>
               <div className="tag-filter-bar">
@@ -991,8 +1172,8 @@ function Notebook() {
           )}
         </div>
         <div className="sidebar-footer">
-          <button className={`account-row${view === 'settings' ? ' active' : ''}`} onClick={() => setView('settings')} title="Settings & models">
-            <span className="account-name">Settings &amp; models</span>
+          <button className={`account-row${view === 'settings' ? ' active' : ''}`} onClick={() => setView('settings')} title="System, models & settings">
+            <span className="account-name">Settings</span>
             <span className="account-gear">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
             </span>
@@ -1013,12 +1194,26 @@ function Notebook() {
               </>
             )}
           </div>
-          {view === 'notes' && streaming !== 'streaming' && (
+          {streaming !== 'streaming' && (
             <div className="main-actions">
               <button onClick={() => setSearchOpen(true)} title="Search notes (⌘F)">{Ico.search}</button>
-              <button onClick={() => newDrawing(null)} title="New drawing">{Ico.palette}</button>
-              <button onClick={() => newNote(null)} title="New note (⌘N)">{Ico.addNote}</button>
-              <button onClick={() => newChat(null)} title="New chat">{Ico.chat}</button>
+              {/* One ＋ for everything you can start here, including a chat inside the open note. */}
+              <div className="chat-menu-anchor" ref={chatMenuRef}>
+                <button onClick={() => setChatMenuOpen((v) => !v)} title="New…">{Ico.plus}</button>
+                {chatMenuOpen && (
+                  <div className="chat-menu">
+                    <button className="chat-menu-item" onClick={() => { setChatMenuOpen(false); newNote(null); }}>{Ico.addNote} New note <span className="chat-menu-key">⌘N</span></button>
+                    <button className="chat-menu-item" onClick={() => { setChatMenuOpen(false); newChat(null); }}>{Ico.chat} New chat</button>
+                    <button className="chat-menu-item" onClick={() => { setChatMenuOpen(false); newDrawing(null); }}>{Ico.palette} New drawing</button>
+                    <button
+                      className="chat-menu-item"
+                      disabled={!isPlainNote}
+                      title={isPlainNote ? '' : 'Open a note first'}
+                      onClick={() => { setChatMenuOpen(false); if (isPlainNote) setNotePanelOpen(true); }}
+                    >{Ico.note} Chat inside</button>
+                  </div>
+                )}
+              </div>
               <button onClick={toggleTheme} title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>{theme === 'dark' ? Ico.sun : Ico.moon}</button>
             </div>
           )}
@@ -1030,20 +1225,39 @@ function Notebook() {
               Back to notes
             </button>
             <div className="settings-combined">
-              <ModelsView />
+              <section className="models-page">
+                <header className="settings-head"><h1>System</h1></header>
+                <SystemDashboard />
+              </section>
               <SettingsView hideModels />
+              <ModelsView />
             </div>
           </div>
         ) : current?.sourceKind === 'chat' ? (
-          <>
-            <input className="title-input" placeholder="New chat" value={title} onChange={(e) => onTitleChange(e.target.value)} />
-            <ChatView
-              noteId={current.id}
-              notes={notes.map((n) => ({ id: n.id, title: n.title }))}
-              onOpenNote={(id) => selectNote(id)}
-              onTurnsChanged={() => window.notebookAPI.list().then(setNotes)}
-            />
-          </>
+          <div className={`chat-split${chatDocId && chatDocOpen ? ' with-doc' : ''}`}>
+            <div className="chat-split-main">
+              <input className="title-input" placeholder="New chat" value={title} onChange={(e) => onTitleChange(e.target.value)} />
+              <ChatView
+                noteId={current.id}
+                notes={notes.map((n) => ({ id: n.id, title: n.title }))}
+                onOpenNote={(id) => selectNote(id)}
+                onTurnsChanged={() => window.notebookAPI.list().then(setNotes)}
+                onApplyCalOps={applyCalendarOps}
+                onChatDoc={handleChatDoc}
+                onShowDoc={() => setChatDocOpen(true)}
+              />
+            </div>
+            {chatDocId && chatDocOpen && (
+              <ChatDocPane
+                docId={chatDocId}
+                reloadKey={docReloadKey}
+                title={notes.find((n) => n.id === chatDocId)?.title || 'Document'}
+                onClose={() => setChatDocOpen(false)}
+                onOpenFull={() => selectNote(chatDocId)}
+                onSaved={refresh}
+              />
+            )}
+          </div>
         ) : current?.sourceKind === 'drawing' ? (
           <>
             <input className="title-input" placeholder="Untitled drawing" value={title} onChange={(e) => onTitleChange(e.target.value)} />
@@ -1051,6 +1265,8 @@ function Notebook() {
               <DrawingDoc key={current.id} noteId={current.id} onSaved={refresh} />
             </Suspense>
           </>
+        ) : current?.sourceKind === 'calendar' ? (
+          <CalendarDoc key={current.id} noteId={current.id} />
         ) : (
         <>
         {findOpen && (
@@ -1125,7 +1341,7 @@ function Notebook() {
         </div>
         {streaming === 'error' && <div className="streaming-tag err">{streamErr}</div>}
         <div className="toolbar">
-          <select value={curFont} onChange={(e) => applyFont(e.target.value)} title="Font">
+          <select className="font-sel" value={curFont} onChange={(e) => applyFont(e.target.value)} title="Font">
             {FONTS.map((f) => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
           </select>
           <select value={curSize} onChange={(e) => applySize(e.target.value)} title="Size">
@@ -1135,52 +1351,61 @@ function Notebook() {
             <>
               <span className="sep" />
               <button className={`ico${editor.isActive('heading', { level: 2 }) ? ' active' : ''}`} onClick={toggleSection} title="Make section title">{Ico.heading}</button>
+              <button className={`ico${editor.isActive('code') ? ' active' : ''}`} onClick={() => editor.chain().focus().toggleCode().run()} title="Inline code (⌘E)">{Ico.inlineCode}</button>
               <button className={`ico${editor.isActive('codeBlock') ? ' active' : ''}`} onClick={toggleCode} title="Code block (pick language on the block)">{Ico.code}</button>
-              <button className="ico" onClick={insertDrawing} title="Insert drawing">{Ico.palette}</button>
-              <div className="tb-table" ref={tableBtnRef}>
-                <button className={`ico${editor.isActive('table') ? ' active' : ''}`} onClick={() => setTableMenuOpen((v) => !v)} title="Insert table">{Ico.table}</button>
-                {tableMenuOpen && (
-                  <div className="grid-pop" onMouseLeave={() => setTableHover({ r: 0, c: 0 })}>
-                    <div className="grid">
-                      {Array.from({ length: 6 }).map((_, r) =>
-                        Array.from({ length: 8 }).map((_, c) => (
-                          <span
-                            key={`${r}-${c}`}
-                            className={`gcell${r <= tableHover.r && c <= tableHover.c ? ' on' : ''}`}
-                            onMouseEnter={() => setTableHover({ r, c })}
-                            onMouseDown={(e) => { e.preventDefault(); insertTable(r + 1, c + 1); }}
-                          />
-                        ))
+              <ColorMenu kind="text" cur={curColor} palette={TEXT_PALETTE} onPick={applyColor} />
+              <ColorMenu kind="hl" cur={curHl} palette={HL_PALETTE} onPick={applyHlColor} onClear={clearHl} />
+              <span className="sep" />
+              <div className="tb-overflow" ref={overflowRef}>
+                <button className={`ico${overflowOpen ? ' active' : ''}`} onClick={() => setOverflowOpen((v) => !v)} title="More">{Ico.ellipsis}</button>
+                {overflowOpen && (
+                  <div className="overflow-pop">
+                    {/* Table keeps its size picker — the row opens the same grid, now nested here. */}
+                    <div className="tb-table" ref={tableBtnRef}>
+                      <button className={`action-item${tableMenuOpen ? ' on' : ''}`} onClick={() => setTableMenuOpen((v) => !v)}>{Ico.table} Insert table</button>
+                      {tableMenuOpen && (
+                        <div className="grid-pop" onMouseLeave={() => setTableHover({ r: 0, c: 0 })}>
+                          <div className="grid">
+                            {Array.from({ length: 6 }).map((_, r) =>
+                              Array.from({ length: 8 }).map((_, c) => (
+                                <span
+                                  key={`${r}-${c}`}
+                                  className={`gcell${r <= tableHover.r && c <= tableHover.c ? ' on' : ''}`}
+                                  onMouseEnter={() => setTableHover({ r, c })}
+                                  onMouseDown={(e) => { e.preventDefault(); insertTable(r + 1, c + 1); }}
+                                />
+                              ))
+                            )}
+                          </div>
+                          <div className="grid-label">{tableHover.c + 1} × {tableHover.r + 1}</div>
+                        </div>
                       )}
                     </div>
-                    <div className="grid-label">{tableHover.c + 1} × {tableHover.r + 1}</div>
+                    <button className="action-item" onClick={() => { setOverflowOpen(false); editor.chain().focus().toggleTaskList().run(); }}>{Ico.todo} To-do list</button>
+                    <button className="action-item" onClick={() => { setOverflowOpen(false); insertDrawing(); }}>{Ico.palette} Insert drawing</button>
+                    <button className="action-item" onClick={() => toggleSpellcheck()}>{Ico.spellcheck} Spell check {spellcheck ? 'on' : 'off'}</button>
+                    {(words > 0 || selectedId) && <>
+                      <button className="action-item" onClick={() => { setOverflowOpen(false); copyNote(); }}>{Ico.copy} Markdown</button>
+                      <button className="action-item" onClick={() => { setOverflowOpen(false); exportNote(); }}>{Ico.download} Export as .md</button>
+                    </>}
                   </div>
                 )}
               </div>
-              <label className="color-btn" title="Text color">
-                <span className="color-dot" style={{ background: curColor }} />
-                <input type="color" value={curColor} onChange={(e) => applyColor(e.target.value)} />
-              </label>
-              <button className={`ico${editor.isActive('highlight') ? ' active' : ''}`} onClick={toggleHighlight} title="Highlight">{Ico.highlight}</button>
-              <label className="color-btn" title="Highlight color">
-                <span className="color-dot hl" style={{ background: curHl }} />
-                <input type="color" value={curHl} onChange={(e) => applyHlColor(e.target.value)} />
-              </label>
-              <span className="sep" />
-              <button className={`ico${spellcheck ? ' active' : ''}`} onClick={toggleSpellcheck} title={spellcheck ? 'Spell check on' : 'Spell check off'}>{Ico.spellcheck}</button>
-            </>
-          )}
-          {(words > 0 || selectedId) && (
-            <>
-              <span className="sep" />
-              <button className="ico" onClick={copyNote} title="Copy as Markdown">{Ico.copy}</button>
-              <button className="ico" onClick={exportNote} title="Export as Markdown (.md)">{Ico.download}</button>
             </>
           )}
         </div>
         </>
         )}
       </main>
+
+      {notePanelOpen && isPlainNote && current && editor && (
+        <NoteChatPanel
+          noteId={current.id}
+          getMarkdown={() => editor.getMarkdown()}
+          onApply={(md) => { editor.commands.setContent(md, { contentType: 'markdown' } as never); editor.commands.focus('end'); }}
+          onClose={() => setNotePanelOpen(false)}
+        />
+      )}
 
       {flagMenu && (
         <div className="flag-menu-backdrop" onMouseDown={() => setFlagMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFlagMenu(null); }}>
@@ -1195,11 +1420,12 @@ function Notebook() {
 
       {actionTarget && (
         <div className="action-modal-backdrop" onMouseDown={closeActions}>
-          <div className="action-modal" style={menuStyle(actionTarget.kind === 'note' ? 190 : 232)} onMouseDown={(e) => e.stopPropagation()}>
+          <div className="action-modal" style={menuStyle(actionTarget.kind === 'note' ? 230 : 232)} onMouseDown={(e) => e.stopPropagation()}>
             {actionTarget.kind === 'note' ? (
               <>
                 <div className="action-title">{actionTarget.note.title || 'Untitled'}</div>
                 <button className="action-item" onClick={() => { const n = actionTarget.note; closeActions(); selectNote(n.id); }}>{Ico.note} Open note</button>
+                <button className="action-item" onClick={() => { const n = actionTarget.note; closeActions(); window.notebookAPI.openInNewWindow(n.id); }}>{Ico.newWindow} Open in new window</button>
                 <button className="action-item" onClick={() => { togglePin(actionTarget.note); closeActions(); }}>{Ico.pin} {actionTarget.note.pinned ? 'Unpin' : 'Pin'}</button>
                 <button className="action-item danger" onClick={() => { const n = actionTarget.note; closeActions(); deleteNote(n); }}>{Ico.trash} Delete note</button>
               </>
@@ -1251,7 +1477,7 @@ function Notebook() {
               ) : results && results.length ? (
                 results.map((n) => (
                   <button key={n.id} className="search-result" onClick={() => { selectNote(n.id); closeSearch(); }}>
-                    <span className="row-icon">{n.sourceKind === 'chat' ? Ico.chat : n.sourceKind === 'drawing' ? Ico.palette : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
+                    <span className="row-icon">{n.sourceKind === 'chat' ? Ico.chat : n.sourceKind === 'drawing' ? Ico.palette : n.sourceKind === 'calendar' ? Ico.calendar : n.model ? <BrandIcon model={n.model} size={16} /> : Ico.note}</span>
                     <span className="sr-body">
                       <span className="sr-title">{n.title || 'Untitled'}</span>
                       <span className="sr-snip">{n.snippet}</span>

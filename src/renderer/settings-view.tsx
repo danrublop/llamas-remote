@@ -71,7 +71,7 @@ export function SettingsView({ showDrag = false, hideModels = false }: { showDra
   return (
     <div className="wrap">
       {showDrag && <div className="drag" />}
-      {!hideModels && <h1>Settings</h1>}
+      <header className="settings-head"><h1>Settings</h1></header>
 
       <div className="section">
         <h2>Notch</h2>

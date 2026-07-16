@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BrandIcon } from './model-icon';
+import { parseCalOps, stripCalOps, describeOp, type CalOp } from './calendar/calendar-ops';
+import { parseDocOps, hasDocOps, stripDocOps, describeDocOps } from './note-doc';
 
 // Chat surface for a source_kind=chat note: a bubble transcript + a composer with model picker
 // and a RAG toggle. Streaming mirrors the notch panel's XSS-safe path — deltas are appended via
@@ -16,16 +18,24 @@ const Ico = {
   chev: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>,
   notes: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>,
   app: <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.146 15.854a1.207 1.207 0 0 1 1.708 0l1.56 1.56A2 2 0 0 1 15 18.828V21a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-2.172a2 2 0 0 1 .586-1.414z" /><path d="M18.828 15a2 2 0 0 1-1.414-.586l-1.56-1.56a1.207 1.207 0 0 1 0-1.708l1.56-1.56A2 2 0 0 1 18.828 9H21a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1z" /><path d="M6.586 14.414A2 2 0 0 1 5.172 15H3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h2.172a2 2 0 0 1 1.414.586l1.56 1.56a1.207 1.207 0 0 1 0 1.708z" /><path d="M9 3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2.172a2 2 0 0 1-.586 1.414l-1.56 1.56a1.207 1.207 0 0 1-1.708 0l-1.56-1.56A2 2 0 0 1 9 5.172z" /></svg>,
+  cal: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>,
+  doc: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="14" y2="17" /></svg>,
 };
 
 const RAG_KEY = 'nb-chat-rag';
 const MODEL_KEY = 'nb-chat-model';
 
-export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
+export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged, onApplyCalOps, onChatDoc, onShowDoc }: {
   noteId: string;
   notes: NoteRef[];
   onOpenNote: (id: string) => void;
   onTurnsChanged?: () => void;
+  /** Apply the model's proposed calendar changes; resolves with what actually landed. */
+  onApplyCalOps?: (ops: CalOp[]) => Promise<{ applied: number; failed: number }>;
+  /** The agent wrote/edited the companion document — apply it and open the split pane. */
+  onChatDoc?: (content: string) => void;
+  /** Reveal the companion document pane (for a chip on an earlier turn). */
+  onShowDoc?: () => void;
 }) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState('');
@@ -37,11 +47,15 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
   const [ragReady, setRagReady] = useState(true); // false → embed model not pulled (falls back to keyword)
   const [modelOpen, setModelOpen] = useState(false);
   const [copied, setCopied] = useState(-1); // index of the turn whose copy just fired
+  const [calApplied, setCalApplied] = useState<Record<number, string>>({}); // turn index → result
   const streamRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const modelPickRef = useRef<HTMLDivElement>(null);
   const noteIdRef = useRef(noteId);
   noteIdRef.current = noteId;
+  // Refs so the stream-done subscription (set up once) always calls the latest callbacks.
+  const onChatDocRef = useRef(onChatDoc);
+  onChatDocRef.current = onChatDoc;
 
   const titleOf = (id: string) => notes.find((n) => n.id === id)?.title || 'Untitled';
   const scrollDown = () => { requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }); };
@@ -71,6 +85,8 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
       setStreaming(false);
       loadTurns();
       onTurnsChanged?.();
+      // Companion document: apply once here (not per-render) so the split pane updates live.
+      if (p.answer && hasDocOps(parseDocOps(p.answer))) onChatDocRef.current?.(p.answer);
     });
     const offErr = window.notebookAPI.onChatError((p) => {
       if (p.noteId !== noteIdRef.current) return;
@@ -101,6 +117,18 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
   const pickModel = (m: string) => { setModel(m); localStorage.setItem(MODEL_KEY, m); setModelOpen(false); };
   const toggleRag = () => setUseRag((v) => { localStorage.setItem(RAG_KEY, v ? 'off' : 'on'); return !v; });
 
+  async function applyOps(i: number, ops: CalOp[]) {
+    if (!onApplyCalOps) return;
+    const r = await onApplyCalOps(ops).catch(() => null);
+    // Say what actually happened: an op naming an event that isn't there is reported, not hidden.
+    setCalApplied((a) => ({
+      ...a,
+      [i]: !r ? "Couldn't reach the calendar"
+        : r.failed ? `Applied ${r.applied}, ${r.failed} didn't match an event`
+        : `Applied ${r.applied} change${r.applied === 1 ? '' : 's'}`,
+    }));
+  }
+
   async function copyTurn(i: number, text: string) {
     try { await navigator.clipboard.writeText(text); setCopied(i); setTimeout(() => setCopied((c) => (c === i ? -1 : c)), 1500); } catch { /* clipboard denied */ }
   }
@@ -122,9 +150,35 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
             <span>Ask anything. {useRag ? 'Answers can draw on your notes.' : 'Notes context is off.'}</span>
           </div>
         )}
-        {turns.map((t, i) => (
+        {turns.map((t, i) => {
+          // Calendar ops + companion-document ops the model proposed. The blocks are protocol, not
+          // prose, so they come out of the displayed text: calendar renders an apply card, the
+          // document was already applied to the split pane and renders a chip that reveals it.
+          const ops = t.role === 'assistant' ? parseCalOps(t.content) : [];
+          const docOps = t.role === 'assistant' ? parseDocOps(t.content) : null;
+          const showDoc = !!docOps && hasDocOps(docOps);
+          let body = t.content;
+          if (ops.length) body = stripCalOps(body);
+          if (showDoc) body = stripDocOps(body);
+          return (
           <div key={i} className={`chat-msg ${t.role}`}>
-            <div className="chat-text">{t.content}</div>
+            {body && <div className="chat-text">{body}</div>}
+            {showDoc && (
+              <button className="chat-doc-chip" onClick={onShowDoc} title="Open the document">
+                {Ico.doc} {describeDocOps(docOps)}
+              </button>
+            )}
+            {ops.length > 0 && (
+              <div className="chat-cal">
+                <div className="chat-cal-head">{Ico.cal} {ops.length} calendar change{ops.length === 1 ? '' : 's'}</div>
+                <ul className="chat-cal-list">
+                  {ops.map((op, j) => <li key={j}>{describeOp(op)}</li>)}
+                </ul>
+                {calApplied[i]
+                  ? <span className="chat-cal-done">{calApplied[i]}</span>
+                  : <button className="chat-cal-apply" onClick={() => applyOps(i, ops)}>Apply to calendar</button>}
+              </div>
+            )}
             {t.role === 'assistant' && t.cites && t.cites.length > 0 && (
               <div className="chat-cites">
                 <span className="chat-cites-label">Sources</span>
@@ -141,7 +195,8 @@ export function ChatView({ noteId, notes, onOpenNote, onTurnsChanged }: {
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
         {streaming && (
           <div className="chat-msg assistant">
             <div className="chat-text streaming" ref={streamRef} />
