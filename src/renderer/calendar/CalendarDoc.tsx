@@ -141,6 +141,17 @@ export default function CalendarDoc({ noteId }: { noteId: string }) {
   // Events only exist inside a day page's editor, so ＋ opens the day you're looking at and hands
   // the insert to DayPage once its editor has mounted.
   const [pendingAdd, setPendingAdd] = useState(false);
+  // Trackpad swipe on the day view: a dominant horizontal wheel gesture flips the day (swipe left
+  // → next day, right → previous). swipeLock caps it at one day per gesture (momentum fires many
+  // events); vertical scroll (deltaY dominant) falls through so the hour grid still scrolls.
+  const swipeLock = useRef(0);
+  const onDayWheel = (e: React.WheelEvent) => {
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) || Math.abs(e.deltaX) < 40) return;
+    const now = Date.now();
+    if (now < swipeLock.current) return;
+    swipeLock.current = now + 500;
+    setCursor((c) => addDays(c, e.deltaX > 0 ? 1 : -1));
+  };
   const addEvent = () => {
     setCursor(titleDate);
     setView('day');
@@ -171,12 +182,14 @@ export default function CalendarDoc({ noteId }: { noteId: string }) {
       {view === 'month' && <MonthView cursor={cursor} today={today} has={hasContent} events={eventsFor} onDay={openDay} onVisible={setScrolledTo} todayTick={todayTick} onUndo={undo} onRedo={redo} />}
       {view === 'week' && <WeekView cursor={cursor} today={today} has={hasContent} events={eventsFor} onDay={openDay} onVisible={setScrolledTo} todayTick={todayTick} onMove={moveEvent} onPaste={pasteEvent} onUndo={undo} onRedo={redo} />}
       {view === 'day' && (
-        <DayPage
-          key={iso(cursor)} date={iso(cursor)} markdown={days[iso(cursor)] || ''}
-          onChange={(md) => setDay(iso(cursor), md)}
-          onRepeat={(md, until) => repeatWeekly(md, iso(cursor), until)}
-          addOnOpen={pendingAdd} onAdded={() => setPendingAdd(false)}
-        />
+        <div className="cal-day-swipe" onWheel={onDayWheel}>
+          <DayPage
+            key={iso(cursor)} date={iso(cursor)} markdown={days[iso(cursor)] || ''}
+            onChange={(md) => setDay(iso(cursor), md)}
+            onRepeat={(md, until) => repeatWeekly(md, iso(cursor), until)}
+            addOnOpen={pendingAdd} onAdded={() => setPendingAdd(false)}
+          />
+        </div>
       )}
     </div>
   );

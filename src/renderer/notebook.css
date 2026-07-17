@@ -815,6 +815,8 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 /* All-day strip: same box, but in flow rather than time-positioned. */
 .cal-ev--chip { position: static; flex: none; padding: 2px 6px; }
 /* Day view — a free-form notebook editor with a container toolbar */
+/* Swipe wrapper is layout-transparent: a flex column that grows so .cal-day still fills. */
+.cal-day-swipe { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .cal-day { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .cal-day-tools { display: flex; align-items: center; gap: 8px; padding: 2px 2px 8px; }
 /* Borderless text, like the other quiet buttons — no container chrome. */
