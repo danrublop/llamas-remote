@@ -16,6 +16,31 @@ export interface NoteWithBlocks {
   drawings: DrawingMeta[];
 }
 
+/** One of the processes currently working the CPU hardest. */
+export interface TopApp {
+  name: string;   // executable name, e.g. "Google Chrome Helper"
+  cpu: number;    // % of one core, as ps reports it — can exceed 100 on a multithreaded process
+}
+
+/** A snapshot of live Mac system stats for the dashboard view. */
+export interface SystemStats {
+  cpu: number;            // overall CPU busy %, 0-100
+  cores: number[];        // per-core busy %
+  cpuModel: string;
+  memTotal: number;       // bytes
+  memUsed: number;        // bytes
+  load: number[];         // 1/5/15-min load average
+  uptime: number;         // seconds
+  hostname: string;
+  platform: string;
+  arch: string;
+  release: string;
+  gpu: string;            // GPU model name ('' if unknown)
+  rxRate: number;         // network download, bytes/sec
+  txRate: number;         // network upload, bytes/sec
+  topApps: TopApp[];      // busiest processes, CPU-heaviest first
+}
+
 export interface NotebookMeta {
   prompt: string;        // action label (Explain / Debug / …) or freeform question
   selection: string;     // captured text
@@ -30,7 +55,7 @@ export interface NoteSummary {
   tags: string[];
   sourceApp?: string;
   model?: string;
-  sourceKind?: 'text' | 'image' | 'chat' | 'drawing';
+  sourceKind?: 'text' | 'image' | 'chat' | 'drawing' | 'game' | 'calendar';
   imagePath?: string;
   pinned: boolean;
   createdAt: string;
@@ -42,6 +67,8 @@ const api = {
   signalReady: () => ipcRenderer.send('notebook:ready'),
   // Notes-app operations
   openSettings: () => ipcRenderer.send('open-settings'),
+  /** Live Mac system stats (CPU/memory/load/uptime) for the dashboard view. */
+  systemStats: (): Promise<SystemStats> => ipcRenderer.invoke('system:stats'),
   list: (): Promise<NoteSummary[]> => ipcRenderer.invoke('notebook:list'),
   /** Abort any in-flight inline generation (call on editor unmount). */
   cancelGen: (): Promise<void> => ipcRenderer.invoke('notebook:cancel-gen'),
@@ -68,7 +95,7 @@ const api = {
   restore: (id: string): Promise<void> => ipcRenderer.invoke('notebook:restore', id),
   remove: (id: string): Promise<void> => ipcRenderer.invoke('notebook:delete', id),
   /** Create an empty note (optionally inside a folder); resolves with the new note id. */
-  createNote: (folderId?: string | null, kind?: 'note' | 'chat' | 'drawing'): Promise<string | null> => ipcRenderer.invoke('notebook:create', folderId ?? null, kind ?? 'note'),
+  createNote: (folderId?: string | null, kind?: 'note' | 'chat' | 'drawing' | 'game' | 'calendar', body?: string): Promise<string | null> => ipcRenderer.invoke('notebook:create', folderId ?? null, kind ?? 'note', body),
 
   // ── Folder tree (organization) ──────────────────────────────────────────────────────
   foldersGet: (): Promise<FolderState> => ipcRenderer.invoke('folders:get'),
@@ -82,6 +109,8 @@ const api = {
   minimizeWindow: () => ipcRenderer.send('win:minimize'),
   zoomWindow: () => ipcRenderer.send('win:zoom'),
   closeWindow: () => ipcRenderer.send('win:close'),
+  /** Open a note in its own separate window. */
+  openInNewWindow: (id: string) => ipcRenderer.send('notebook:open-window', id),
   /** Fired after a streamed answer is saved (id of the new note). */
   onSaved: (cb: (id: string) => void) => {
     const h = (_e: unknown, id: string) => cb(id);
@@ -182,6 +211,26 @@ const api = {
     const h = (_e: unknown, p: { noteId: string; error: string }) => cb(p);
     ipcRenderer.on('chat:error', h);
     return () => ipcRenderer.removeListener('chat:error', h);
+  },
+
+  // ── Note-side chat panel (ephemeral: renderer owns the transcript) ──────────────
+  noteChatSend: (req: { noteId: string; model?: string; noteMarkdown: string; history: Array<{ role: 'user' | 'assistant'; content: string }> }): Promise<{ ok: boolean; answer?: string; error?: string }> =>
+    ipcRenderer.invoke('notechat:send', req),
+  noteChatAbort: (noteId: string): Promise<void> => ipcRenderer.invoke('notechat:abort', noteId),
+  onNoteChatToken: (cb: (p: { noteId: string; delta: string }) => void) => {
+    const h = (_e: unknown, p: { noteId: string; delta: string }) => cb(p);
+    ipcRenderer.on('notechat:token', h);
+    return () => ipcRenderer.removeListener('notechat:token', h);
+  },
+  onNoteChatDone: (cb: (p: { noteId: string; answer: string; model: string }) => void) => {
+    const h = (_e: unknown, p: { noteId: string; answer: string; model: string }) => cb(p);
+    ipcRenderer.on('notechat:done', h);
+    return () => ipcRenderer.removeListener('notechat:done', h);
+  },
+  onNoteChatError: (cb: (p: { noteId: string; error: string }) => void) => {
+    const h = (_e: unknown, p: { noteId: string; error: string }) => cb(p);
+    ipcRenderer.on('notechat:error', h);
+    return () => ipcRenderer.removeListener('notechat:error', h);
   },
 };
 

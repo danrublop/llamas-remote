@@ -55,6 +55,14 @@ export interface Clipboard {
 export interface ClipboardCaptureOptions {
   /** ms to wait after the synthetic copy for the focused app to write the clipboard. */
   captureDelayMs?: number;
+  /**
+   * ms to wait BEFORE the synthetic copy. The clipboard fallback runs on the global hotkey
+   * (⌘⇧Space), so the user is often still physically holding ⌘+Shift when we fire the
+   * synthetic ⌘C — macOS ORs the held Shift in, turning it into ⌘⇧C, which copies nothing.
+   * A short wait lets the modifiers release first. ponytail: fixed delay, not modifier-state
+   * polling (no simple Electron API for that); a very slow key release still misses.
+   */
+  preCopyDelayMs?: number;
   /** Injected sleep so tests run instantly. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -78,6 +86,7 @@ export async function captureViaClipboard(
 ): Promise<CaptureResult> {
   const sleep = options.sleep ?? defaultSleep;
   const delay = options.captureDelayMs ?? 150;
+  const preCopyDelay = options.preCopyDelayMs ?? 0;
 
   // Save the user's clipboard so we can put it back no matter what happens. Prefer the
   // full-format snapshot (preserves an image/RTF/HTML clipboard); fall back to text-only
@@ -85,6 +94,8 @@ export async function captureViaClipboard(
   const useFullSnapshot = typeof clipboard.snapshot === 'function' && typeof clipboard.restore === 'function';
   const saved: unknown = useFullSnapshot ? clipboard.snapshot!() : clipboard.readText();
   try {
+    // Let the hotkey's ⌘+Shift release before we synthesize ⌘C (see preCopyDelayMs).
+    if (preCopyDelay > 0) await sleep(preCopyDelay);
     // Clear first so a stale value isn't mistaken for the selection.
     clipboard.clear();
     await triggerCopy();

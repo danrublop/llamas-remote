@@ -3,6 +3,25 @@
 All notable changes to Llamas Remote are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.11.0] - 2026-07-16
+
+### Added
+- **Open a note in its own window.** The sidebar note actions menu gains "Open in new window" — a second notebook window scoped to that note. Re-opening the same note focuses the existing window.
+- **To-do lists in any note.** The toolbar "…" menu gains "To-do list" (the same checklist the calendar uses), so any note can hold checkable tasks.
+- **Colour palette menus for text + highlight.** The toolbar text-colour and highlight buttons now open a preset swatch palette plus a "colour wheel" button for a custom colour; highlight adds a Remove option.
+- **Calendar and system views.** Notes can now be a calendar (day pages with events + to-dos) or a live Mac system dashboard, alongside the existing text / chat / drawing / game kinds.
+- **Swipe between days.** In the calendar day view, a horizontal trackpad swipe flips the day (left → next, right → previous).
+- **Note-side chat panel.** A right-side "chat with this note" panel that reasons over the open note's Markdown.
+
+### Changed
+- **The command menu opens on ⌘/ instead of typing `/`.** A bare slash no longer pops the command menu mid-sentence; press ⌘/ (Ctrl+/ elsewhere) to open it at the caret.
+- **Heading gutter mark is now a bookmark** (was a sparkle), vertically centred on the heading's first line.
+
+## [1.10.1] - 2026-07-10
+
+### Fixed
+- **Selection capture in editors without Accessibility support (e.g. Zed).** When the app falls back to a synthetic ⌘C, it now waits for the ⌘⇧Space hotkey modifiers to release first — otherwise the still-held Shift turned the copy into ⌘⇧C and captured nothing.
+
 ## [1.10.0] - 2026-07-10
 
 ### Added

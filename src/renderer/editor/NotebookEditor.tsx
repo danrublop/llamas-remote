@@ -3,7 +3,7 @@
 // Additive component — not yet swapped into notebook.tsx. Verify with `npm run dev` before
 // replacing the contentEditable editor.
 //
-//   user types `/` -> slash menu (filterCommands) -> pick -> insert empty AiBlock(blockId)
+//   ⌘/ hotkey -> slash menu (filterCommands) -> pick -> insert empty AiBlock(blockId)
 //        |                                                         |
 //        +- selection text ----------------------------------------+
 //   notebookAPI.generate({blockId, commandId, selection}) -> onGen* (by blockId) ->
@@ -19,6 +19,8 @@ import { AiBlockView } from './ai-block-view';
 import { CodeBlockView } from './code-block-view';
 import { Drawing } from './drawing';
 import { DrawingView } from './drawing-view';
+import { CalendarEvent } from './event';
+import { EventView } from './event-view';
 import { notebookExtensions, lowlight } from './extensions';
 import { markdownToDoc } from './reconstruct';
 import { setAiBlockText, setAiBlockAttrs, setAiBlockMarkdown, collectAiBlocks, collectDrawings, setDrawingScene } from './doc-helpers';
@@ -55,11 +57,20 @@ const CodeBlockWithView = CodeBlockLowlight.extend({
   addNodeView() {
     return ReactNodeViewRenderer(CodeBlockView);
   },
-}).configure({ lowlight });
+// defaultLanguage: unlabeled blocks (attrs.language === null) highlight as Java instead of
+// running lowlight's highlightAuto, which mis-detects Java as C# and produces broken colors.
+// Per-block dropdown still overrides; pick "Plain" for a genuinely unhighlighted block.
+}).configure({ lowlight, defaultLanguage: 'java' });
 
 const DrawingWithView = Drawing.extend({
   addNodeView() {
     return ReactNodeViewRenderer(DrawingView);
+  },
+});
+
+const EventWithView = CalendarEvent.extend({
+  addNodeView() {
+    return ReactNodeViewRenderer(EventView);
   },
 });
 
@@ -125,6 +136,12 @@ const TABLE_ACTIONS: TableAction[] = [
 
 export function NotebookEditor({ noteId, markdown, aiBlocks = [], drawings = [], model, userCommands = [], onChange, onEditorReady }: NotebookEditorProps) {
   const [menu, setMenu] = useState<MenuState>(CLOSED);
+  // The slash menu no longer pops on a bare '/' (it interrupted writing) — it opens only when
+  // armed by the ⌘/ hotkey. armSlashRef arms the next detectSlash; menuOpenRef lets an
+  // already-open menu keep tracking the typed query (detectSlash closes over a stale `menu`).
+  const menuOpenRef = useRef(false);
+  const armSlashRef = useRef(false);
+  useEffect(() => { menuOpenRef.current = menu.open; }, [menu.open]);
   const [tableMenu, setTableMenu] = useState<TableMenuState>(TABLE_CLOSED);
   // The drawing currently open in the Excalidraw modal (id + its scene), or null when closed.
   const [drawEdit, setDrawEdit] = useState<{ drawingId: string; scene: unknown } | null>(null);
@@ -166,8 +183,15 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], drawings = [],
     // One shared schema for the live editor + the headless parse/serialize paths, with the
     // React NodeView spliced in for the AI block. Reconstruct AI blocks from the sidecar on
     // load (their anchors don't survive a plain markdown parse — see reconstruct.ts).
-    extensions: notebookExtensions({ aiBlock: AiBlockWithView, codeBlock: CodeBlockWithView, drawing: DrawingWithView }),
+    extensions: notebookExtensions({ aiBlock: AiBlockWithView, codeBlock: CodeBlockWithView, drawing: DrawingWithView, event: EventWithView }),
     content: initialContent,
+    // The toolbar floats over the bottom ~2 lines (position:absolute, bottom:18px). Keep the
+    // caret scrolled clear of it: PM's default scrollMargin.bottom is 5px, which parks a new
+    // line right under the toolbar. ~72px ≈ toolbar height + its bottom offset.
+    editorProps: {
+      scrollThreshold: { top: 8, bottom: 72, left: 0, right: 0 },
+      scrollMargin: { top: 8, bottom: 72, left: 0, right: 0 },
+    },
     onUpdate: ({ editor }) => {
       if (onChangeRef.current) {
         const md = editor.getMarkdown();
@@ -207,10 +231,20 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], drawings = [],
     if (!editor) return;
     const { state } = editor;
     const { $from, empty } = state.selection;
-    if (!empty) return setMenu(CLOSED);
+    const close = () => { menuOpenRef.current = false; return setMenu(CLOSED); };
+    if (!empty) return close();
     const textBefore = $from.parent.textBetween(0, $from.parentOffset, undefined, '￼');
-    const m = /(?:^|\s)\/(\S*)$/.exec(textBefore);
-    if (!m) return setMenu(CLOSED);
+    // Relaxed (no leading ^|\s anchor): the menu only ever opens via the ⌘/ hotkey now, so the
+    // old anti-URL guard isn't needed — this lets ⌘/ work mid-word too, tracking the query from
+    // the inserted '/' to the caret. A space in the query ends the match → menu closes.
+    const m = /\/(\S*)$/.exec(textBefore);
+    if (!m) return close();
+    // Never open on a '/' the user just typed while writing — only when the ⌘/ hotkey armed it,
+    // or when the menu is already open (so typing keeps filtering the live query). menuOpenRef is
+    // set synchronously here because onUpdate + onSelectionUpdate both fire detectSlash in one tick.
+    if (!menuOpenRef.current && !armSlashRef.current) return;
+    armSlashRef.current = false;
+    menuOpenRef.current = true;
     const query = m[1];
     const slashFrom = $from.pos - query.length - 1; // position of the '/'
     const coords = editor.view.coordsAtPos($from.pos);
@@ -332,6 +366,14 @@ export function NotebookEditor({ noteId, markdown, aiBlocks = [], drawings = [],
 
   // ---- menu keyboard nav ---------------------------------------------------------------
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // ⌘/ opens the command menu at the caret (inserts the '/' the inline filter tracks). This
+    // replaces the old type-'/' trigger so a literal slash no longer interrupts writing.
+    if ((e.metaKey || e.ctrlKey) && e.key === '/') {
+      e.preventDefault();
+      armSlashRef.current = true;
+      editor?.chain().focus().insertContent('/').run();
+      return;
+    }
     if (!menu.open || results.length === 0) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); setMenu((p) => ({ ...p, index: (p.index + 1) % results.length })); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setMenu((p) => ({ ...p, index: (p.index - 1 + results.length) % results.length })); }

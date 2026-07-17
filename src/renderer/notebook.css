@@ -56,6 +56,8 @@
 :root[data-theme="dark"] .editor::-webkit-scrollbar-thumb,
 :root[data-theme="dark"] .note-list::-webkit-scrollbar-thumb,
 :root[data-theme="dark"] .settings-pane::-webkit-scrollbar-thumb,
+:root[data-theme="dark"] .cal-month-body::-webkit-scrollbar-thumb,
+:root[data-theme="dark"] .cal-week-body::-webkit-scrollbar-thumb,
 :root[data-theme="dark"] .nb-editor__content::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); background-clip: padding-box; }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -255,7 +257,42 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .toolbar .color-dot { width: 15px; height: 15px; border-radius: 50%; border: 1px solid rgba(38,37,30,0.22); box-shadow: inset 0 1px 1px rgba(255,255,255,0.4); }
 .toolbar .color-dot.hl { border-radius: 4px; }
 .toolbar .color-btn input[type="color"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: none; padding: 0; margin: 0; cursor: pointer; }
+/* Text-color / highlight popover: preset swatches + a "color wheel" custom button. */
+.toolbar .color-menu { position: relative; display: inline-flex; }
+.cm-backdrop { position: fixed; inset: 0; z-index: 39; }
+.cm-pop { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 40;
+  background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 10px;
+  padding: 8px; display: flex; flex-direction: column; gap: 7px; box-shadow: 0 12px 32px rgba(38,37,30,0.22); }
+.cm-swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.cm-swatch { width: 22px; height: 22px; border-radius: 50%; border: 1px solid rgba(38,37,30,0.18); padding: 0; cursor: pointer; }
+.cm-swatch.hl { border-radius: 5px; }
+.cm-swatch.on { border-color: var(--ink); box-shadow: 0 0 0 2px var(--surface-card), 0 0 0 3px var(--ink); }
+.cm-wheel { position: relative; display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 7px;
+  font-size: 12px; color: var(--ink-soft); cursor: pointer; }
+.cm-wheel:hover { background: var(--hairline-soft); }
+.cm-wheel-dot { width: 16px; height: 16px; border-radius: 50%; flex: none;
+  background: conic-gradient(red, magenta, blue, cyan, lime, yellow, red); border: 1px solid rgba(38,37,30,0.2); }
+.cm-wheel input[type="color"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: none; padding: 0; margin: 0; cursor: pointer; }
+.cm-clear { height: auto; padding: 6px 8px; border-radius: 7px; border: none; background: none; font-size: 12px; color: var(--muted); text-align: left; cursor: pointer; }
+.cm-clear:hover { background: var(--hairline-soft); color: var(--ink); }
 .toolbar .sep { width: 1px; height: 18px; background: var(--hairline); margin: 0 2px; }
+/* Font picker: fixed narrow width (native chevron kept) so a long family name clips instead of
+   stretching the control and leaving a gap before the chevron. */
+.toolbar select.font-sel { width: 90px; max-width: 90px; }
+/* Toolbar overflow ("…") menu — opens upward, reuses .action-item rows. */
+.toolbar .tb-overflow { position: relative; display: inline-flex; }
+.overflow-pop {
+  position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 40;
+  background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 10px;
+  padding: 5px; min-width: 172px; display: flex; flex-direction: column;
+  box-shadow: 0 12px 32px rgba(38,37,30,0.22);
+}
+/* .toolbar button forces 28px/centered — reset that for the menu rows. */
+.overflow-pop button.action-item { min-width: 0; width: 100%; height: auto; padding: 9px 10px; justify-content: flex-start; }
+.overflow-pop button.action-item:hover, .overflow-pop button.action-item.on { background: var(--hairline-soft); }
+/* The table row's size picker flies out to the side — above would cover the menu it came from. */
+.overflow-pop .tb-table { display: block; width: 100%; }
+.overflow-pop .grid-pop { bottom: auto; top: -6px; left: auto; right: calc(100% + 8px); transform: none; }
 .toolbar .meta { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 0 4px; }
 
 /* ── Section outline: the open note's headings, nested under its sidebar row ── */
@@ -263,7 +300,7 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .sec-caret.open { transform: rotate(90deg); }
 .sec-caret:hover { background: rgba(38,37,30,0.08); color: var(--ink); }
 .sec-caret svg { display: block; }
-.section-row { display: flex; align-items: center; gap: 6px; width: calc(100% - 4px); text-align: left; border: none; background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; line-height: 1.3; padding: 3px 9px; border-radius: 7px; }
+.section-row { display: flex; align-items: center; gap: 6px; margin-left: var(--sec-x, 0px); width: calc(100% - var(--sec-x, 0px) - 4px); text-align: left; border: none; background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; line-height: 1.3; padding: 3px 9px; border-radius: 7px; }
 .section-row:hover { background: var(--hairline-soft); color: var(--ink); }
 .section-row.lvl1 { color: var(--ink-soft); font-weight: 500; }
 .section-row .sec-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -276,7 +313,8 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .nb-editor__content .ProseMirror h4,
 .nb-editor__content .ProseMirror h5,
 .nb-editor__content .ProseMirror h6 { position: relative; }
-.head-flag { position: absolute; left: -26px; top: 0.2em; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; margin: 0; border: none; background: none; cursor: pointer; color: var(--muted-soft); opacity: 0.4; transition: opacity 0.12s ease, color 0.12s ease; }
+/* height ≈ heading line-height (1.25–1.35), in em so it tracks each level's font-size → icon centers on the first line. */
+.head-flag { position: absolute; left: -26px; top: 0; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 1.3em; padding: 0; margin: 0; border: none; background: none; cursor: pointer; color: var(--muted-soft); opacity: 0.4; transition: opacity 0.12s ease, color 0.12s ease; }
 .head-flag:hover { opacity: 1; color: var(--muted); }
 .head-flag.on { opacity: 1; }
 .head-flag svg { display: block; }
@@ -335,9 +373,11 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .streaming-tag.err { color: var(--accent-active); }
 
 /* Soft scrollbars throughout */
-.editor::-webkit-scrollbar, .note-list::-webkit-scrollbar, .settings-pane::-webkit-scrollbar { width: 11px; }
-.editor::-webkit-scrollbar-thumb, .note-list::-webkit-scrollbar-thumb, .settings-pane::-webkit-scrollbar-thumb { background: rgba(38,37,30,0.14); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
-.editor::-webkit-scrollbar-thumb:hover, .note-list::-webkit-scrollbar-thumb:hover, .settings-pane::-webkit-scrollbar-thumb:hover { background: rgba(38,37,30,0.26); background-clip: padding-box; }
+/* Styling ::-webkit-scrollbar opts these out of macOS's overlay bars, so the thumb is always shown
+   rather than fading out when idle. height covers the week grid's horizontal axis. */
+.editor::-webkit-scrollbar, .note-list::-webkit-scrollbar, .settings-pane::-webkit-scrollbar, .cal-month-body::-webkit-scrollbar, .cal-week-body::-webkit-scrollbar { width: 11px; height: 11px; }
+.editor::-webkit-scrollbar-thumb, .note-list::-webkit-scrollbar-thumb, .settings-pane::-webkit-scrollbar-thumb, .cal-month-body::-webkit-scrollbar-thumb, .cal-week-body::-webkit-scrollbar-thumb { background: rgba(38,37,30,0.14); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
+.editor::-webkit-scrollbar-thumb:hover, .note-list::-webkit-scrollbar-thumb:hover, .settings-pane::-webkit-scrollbar-thumb:hover, .cal-month-body::-webkit-scrollbar-thumb:hover, .cal-week-body::-webkit-scrollbar-thumb:hover { background: rgba(38,37,30,0.26); background-clip: padding-box; }
 
 .placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 40px; }
 
@@ -351,7 +391,10 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 @keyframes toast-in { from { opacity: 0; transform: translateY(-10px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
 /* ---- TipTap notebook editor (NotebookEditor.tsx) — additive, graphite per design review ---- */
-.nb-editor { position: relative; }
+/* Column flex so .nb-editor__content (flex:1 + overflow-y:auto) is the thing that scrolls, whoever
+   mounts the editor — otherwise the content just grows and shoves the page around it. Its other
+   children are fixed-position overlays, so they're out of flow and unaffected. */
+.nb-editor { position: relative; display: flex; flex-direction: column; }
 /* Match the title's horizontal inset (--pad-x) so the body aligns with the title,
    plus bottom clearance for the floating toolbar. */
 .nb-editor__content .ProseMirror { outline: none; line-height: 1.68; padding: 10px var(--pad-x) 120px; }
@@ -404,21 +447,22 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--hairline); }
 
 /* ---- editor wiring (NotebookEditor swap) ---- */
-.editor-wrap .nb-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.editor-wrap .nb-editor { flex: 1; min-height: 0; }
 .nb-editor__content { flex: 1; min-height: 0; overflow-y: auto; }
 .nb-editor__content::-webkit-scrollbar { width: 11px; }
 .nb-editor__content::-webkit-scrollbar-thumb { background: rgba(38,37,30,0.14); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
 .nb-editor__content::-webkit-scrollbar-thumb:hover { background: rgba(38,37,30,0.26); background-clip: padding-box; }
 
 /* Code blocks in the TipTap editor (syntax-highlighted via lowlight) + inline code */
-.nb-editor__content .ProseMirror pre { background: var(--canvas-soft); border: 1px solid var(--hairline); padding: 13px 15px; border-radius: 12px; overflow-x: auto; margin: 0.9em 0; line-height: 1.55; }
-.nb-editor__content .ProseMirror pre code { font-family: var(--mono); font-size: 0.85em; background: none; border: none; padding: 0; color: var(--ink); }
+/* Long lines never wrap — the block scrolls horizontally instead, regardless of window width. */
+.nb-editor__content .ProseMirror pre { background: var(--canvas-soft); border: 1px solid var(--hairline); padding: 13px 15px; border-radius: 12px; overflow-x: auto; max-width: 100%; margin: 0.9em 0; line-height: 1.55; white-space: pre; }
+.nb-editor__content .ProseMirror pre code { display: block; font-family: var(--mono); font-size: 0.85em; background: none; border: none; padding: 0; color: var(--ink); white-space: pre; word-break: normal; overflow-wrap: normal; }
 .nb-editor__content .ProseMirror code { font-family: var(--mono); font-size: 0.86em; background: var(--surface-card); border: 1px solid var(--hairline); padding: 1px 5px; border-radius: 5px; }
-/* Code-block NodeView: language dropdown pinned to the block's top-right (Notion/Docs style) */
+/* Code-block NodeView: language dropdown pinned to the block's bottom-right (Notion/Docs style) */
 .nb-editor__content .cb { position: relative; }
 .nb-editor__content .cb pre { margin: 0.9em 0; }
 .cb-lang {
-  position: absolute; top: 6px; right: 8px; z-index: 1;
+  position: absolute; bottom: 8px; right: 10px; z-index: 1;
   height: 22px; max-width: 120px; border: 1px solid var(--hairline); border-radius: 7px;
   background: var(--surface-card); color: var(--muted); font-family: var(--mono); font-size: 11px;
   padding: 0 4px; cursor: pointer; opacity: 0; transition: opacity 0.12s;
@@ -442,8 +486,10 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .nb-editor__content .ProseMirror table { border-collapse: collapse; width: 100%; table-layout: fixed; margin: 0.9em 0; overflow: hidden; }
 .nb-editor__content .ProseMirror th, .nb-editor__content .ProseMirror td { border: 1px solid var(--hairline); padding: 6px 9px; vertical-align: top; position: relative; }
 .nb-editor__content .ProseMirror th { background: var(--surface-card); font-weight: 600; text-align: left; }
-.nb-editor__content .ProseMirror .selectedCell::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--accent) 16%, transparent); pointer-events: none; }
-.nb-editor__content .ProseMirror .column-resize-handle { position: absolute; right: -1px; top: 0; bottom: 0; width: 3px; background: var(--accent); cursor: col-resize; }
+/* Cell selection + column-resize guide stay neutral gray — resizing rows/columns must never
+   tint the grid pink. */
+.nb-editor__content .ProseMirror .selectedCell::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--ink) 8%, transparent); pointer-events: none; }
+.nb-editor__content .ProseMirror .column-resize-handle { position: absolute; right: -1px; top: 0; bottom: 0; width: 2px; background: var(--hairline-strong); cursor: col-resize; }
 /* ── Drawings (Excalidraw) ── */
 .nb-editor__content .ProseMirror .drawing { position: relative; display: inline-block; max-width: 100%; margin: 0.6em 0; border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; background: var(--canvas-soft); line-height: 0; }
 .nb-editor__content .ProseMirror .drawing--selected { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -549,6 +595,21 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .toolbar-hint code { font-family: var(--mono); background: var(--surface-strong); padding: 0 4px; border-radius: 4px; }
 
 /* ── Chat surface (source_kind=chat notes) — full-width, no bubbles ─────────── */
+/* Chat + companion document, side by side. Without a doc the chat fills the pane as before. */
+.chat-split { flex: 1; display: flex; flex-direction: row; min-height: 0; min-width: 0; }
+.chat-split-main { flex: 1 1 0; display: flex; flex-direction: column; min-width: 340px; }
+.chat-doc-pane { flex: 1 1 0; display: flex; flex-direction: column; min-width: 300px; min-height: 0; border-left: 1px solid var(--hairline-strong); background: var(--canvas); }
+.chat-doc-head { flex: none; display: flex; align-items: center; gap: 6px; height: 38px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--hairline-soft); }
+.chat-doc-title { flex: 1; font-size: 13px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-doc-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
+.chat-doc-btn:hover { background: var(--hairline-soft); color: var(--ink); }
+.chat-doc-body { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+/* The mounted editor fills the pane and scrolls (the flex:1 is otherwise scoped to .editor-wrap). */
+.chat-doc-body .nb-editor { flex: 1; min-width: 0; min-height: 0; }
+/* A transcript chip pointing at the document the agent just wrote. */
+.chat-doc-chip { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; margin-top: 4px; font-size: 12px; color: var(--accent); background: var(--accent-soft); border: none; border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+.chat-doc-chip:hover { filter: brightness(0.96); }
+
 .chat { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .chat-scroll { flex: 1; overflow-y: auto; padding: 14px var(--pad-x) 28px; display: flex; flex-direction: column; gap: 24px; }
 .chat-empty { margin: auto; color: var(--muted); font-size: 14px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px; }
@@ -567,6 +628,14 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .chat-cites-label { font-size: 11px; color: var(--muted-soft); text-transform: uppercase; letter-spacing: 0.05em; }
 .chat-cite { font-size: 12px; color: var(--ink-soft); background: var(--hairline-soft); border: none; border-radius: 7px; padding: 3px 9px; cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-cite:hover { background: var(--accent-soft); color: var(--accent); }
+/* Proposed calendar changes: a card you read before it touches anything. */
+.chat-cal { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; margin-top: 4px; max-width: 420px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 12px; padding: 10px 12px; }
+.chat-cal-head { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted-soft); text-transform: uppercase; letter-spacing: 0.05em; }
+.chat-cal-list { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-soft); }
+.chat-cal-apply { font-size: 12px; color: var(--accent); background: var(--accent-soft); border: none; border-radius: 7px; padding: 4px 10px; cursor: pointer; }
+.chat-cal-apply:hover { filter: brightness(0.96); }
+.chat-cal-done { font-size: 12px; color: var(--muted); }
+
 .chat-actions { display: flex; gap: 4px; margin-top: 2px; }
 .chat-copy { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; color: var(--muted); background: none; border: none; border-radius: 7px; padding: 0; cursor: pointer; }
 .chat-copy:hover { background: var(--hairline-soft); color: var(--ink); }
@@ -601,3 +670,256 @@ body.resizing, body.resizing * { user-select: none !important; -webkit-user-sele
 .chat-send { flex: none; width: 32px; height: 32px; border: none; border-radius: 50%; background: var(--accent); color: var(--on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .chat-send:hover:not(:disabled) { background: var(--accent-active); }
 .chat-send:disabled { background: var(--hairline-strong); color: var(--muted-soft); cursor: default; }
+
+/* ── Chat-button dropdown (New chat / Chat with this note) ─────────────────────── */
+.chat-menu-anchor { position: relative; display: flex; }
+.chat-menu { position: absolute; top: 32px; right: 0; z-index: 40; width: max-content; padding: 5px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 11px; box-shadow: 0 8px 28px rgba(0,0,0,0.14); display: flex; flex-direction: column; gap: 2px; -webkit-app-region: no-drag; }
+/* Override .main-actions button (28×28 square) — these are full-width rows, not icon buttons. */
+.chat-menu .chat-menu-item { display: flex; align-items: center; justify-content: flex-start; gap: 9px; width: 100%; height: auto; padding: 8px 10px; border: none; border-radius: 7px; background: none; color: var(--ink); font-size: 13px; line-height: 1.2; white-space: nowrap; text-align: left; cursor: pointer; }
+.chat-menu .chat-menu-item:hover:not(:disabled) { background: var(--hairline-soft); color: var(--ink); }
+.chat-menu .chat-menu-item:disabled { color: var(--muted-soft); cursor: default; }
+.chat-menu .chat-menu-item svg { flex: none; width: 16px; height: 16px; color: var(--muted); }
+.chat-menu-key { margin-left: auto; padding-left: 14px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+/* ── Note-side chat panel (right aside; reuses .chat-* internals) ──────────────── */
+.note-chat-panel { position: relative; flex: none; min-width: 280px; display: flex; flex-direction: column; background: var(--canvas); border-left: 1px solid var(--hairline-strong); }
+.note-chat-panel .chat-scroll { padding: 44px 16px 22px; gap: 18px; }
+.note-chat-panel .chat-dock { padding: 4px 14px 14px; }
+/* Left-edge drag handle (mirrors .sidebar-resizer, but the panel grows leftward). */
+.ncp-resizer { position: absolute; top: 0; left: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 5; -webkit-app-region: no-drag; }
+/* Close button floats at the app's top-right corner — no header, so the chat feels part of the note. */
+.ncp-close { position: absolute; top: 8px; right: 10px; z-index: 6; display: flex; width: 26px; height: 26px; align-items: center; justify-content: center; border: none; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; -webkit-app-region: no-drag; }
+.ncp-close:hover { background: var(--hairline-soft); color: var(--ink); }
+.ncp-empty { font-size: 13px; line-height: 1.5; padding: 0 6px; }
+.ncp-edit { margin-top: 8px; display: flex; flex-direction: column; gap: 7px; align-items: flex-start; padding: 9px 11px; background: var(--accent-soft); border: 1px solid var(--hairline-soft); border-radius: 10px; }
+.ncp-edit-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.ncp-edit-label svg { color: var(--accent); }
+.ncp-apply { padding: 5px 12px; border: none; border-radius: 7px; background: var(--accent); color: var(--on-accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+.ncp-apply:hover { background: var(--accent-active); }
+.ncp-applied { font-size: 12px; color: var(--ink-soft); }
+
+/* ── Calendar (source_kind=calendar) ──────────────────────────────────────────────────── */
+.cal { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 14px 14px; gap: 8px; }
+.cal-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* "**August** 2026" — the month carries the weight, the year trails it. No min-width: it would be a
+   floor under the whole bar, overflowing the pane (and scrolling the grid) on a narrow window. */
+.cal-title { font-size: 20px; font-weight: 400; color: var(--muted); min-width: 0; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-title b { font-weight: 700; color: var(--ink); }
+/* Day view's "Mon 20", trailing the month — same line, quieter than the month itself. */
+.cal-title-day { margin-left: 10px; font-size: 15px; font-weight: 500; color: var(--ink); }
+/* Borderless, like the other icon buttons — no container chrome. */
+.cal-today { flex: none; height: 28px; padding: 0 10px; border: none; border-radius: 7px; background: none; color: var(--muted); font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.cal-today:hover { background: var(--hairline-soft); color: var(--ink); }
+/* The one filled control in the bar — adding an event is the primary action here. */
+.cal-add { width: 28px; height: 28px; flex: none; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 50%; background: var(--accent, #3b82f6); color: var(--on-accent, #fff); cursor: pointer; }
+.cal-add:hover { background: var(--accent-active, #2563eb); }
+.cal-add svg { display: block; }
+.cal-spacer { flex: 1; }
+/* ── Month view ── continuous hairline grid (no per-day cards), scrolling on past the month end;
+   the weekday header stays pinned. Row height from --cal-row-h, set inline from ROW_H. */
+/* minmax(0, 1fr), not 1fr: a bare 1fr is minmax(auto, 1fr), so columns refuse to shrink past their
+   content and the grid overflows a narrow pane instead of fitting it. */
+.cal-dow { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); flex: none; border-bottom: 1px solid var(--hairline); }
+.cal-dow-cell { text-align: center; font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: 0.2px; padding: 4px 0; }
+/* proximity, not mandatory: a flick eases to rest locked on a week row, but a small deliberate
+   scroll is left where you put it. */
+.cal-month-body { flex: 1; min-height: 0; overflow-y: auto; scroll-snap-type: y proximity; }
+.cal-month-body:focus { outline: none; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: var(--cal-row-h); }
+.cal-cell { scroll-snap-align: start; }
+.cal-cell { display: flex; flex-direction: column; gap: 2px; padding: 3px 4px; border-right: 1px solid var(--hairline-soft); border-bottom: 1px solid var(--hairline-soft); cursor: pointer; overflow: hidden; }
+.cal-cell:nth-child(7n) { border-right: none; }
+.cal-cell:hover { background: var(--hairline-soft); }
+/* Days of the months either side of the one you've scrolled to read as context, not content. */
+.cal-cell.out .cal-daynum { color: var(--muted); }
+.cal-cell.out .cal-mevs { opacity: 0.55; }
+.cal-daynum { font-size: 13px; font-weight: 600; color: var(--ink); flex: none; text-align: right; }
+.cal-cell.today .cal-daynum { align-self: flex-end; display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--accent, #3b82f6); color: #fff; }
+/* Month cells list their events as colour-barred rows, overflowing into "+N more". */
+.cal-mevs { display: flex; flex-direction: column; gap: 1px; min-height: 0; overflow: hidden; }
+.cal-mev { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cal-mev-bar { flex: none; width: 3px; height: 12px; border-radius: 2px; background: var(--ev-color); }
+.cal-mev-title { font-size: 11px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-more { font-size: 10.5px; color: var(--muted); padding-left: 7px; }
+.cal-input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--hairline-strong); border-radius: 8px; background: var(--canvas); color: var(--ink); font-size: 13.5px; font-family: var(--sans); }
+/* Same treatment as .ev-time: kill the system-accent focus ring, highlight the segment you're
+   editing in the app's pink instead of the OS yellow. */
+.cal-input:focus, .cal-input:focus-visible, .cal-input:focus-within { outline: none; border-color: var(--accent); }
+.cal-input::-webkit-datetime-edit-month-field:focus,
+.cal-input::-webkit-datetime-edit-day-field:focus,
+.cal-input::-webkit-datetime-edit-year-field:focus { background: var(--accent); color: var(--on-accent, #fff); border-radius: 3px; outline: none; }
+.cal-save { height: 30px; padding: 0 16px; border: none; border-radius: 7px; background: var(--accent, #3b82f6); color: #fff; font-size: 12.5px; cursor: pointer; }
+/* View toggle (Month / Week / Day) */
+/* 24px buttons + 2px padding = 28px, matching the circular ＋ beside it. */
+.cal-views { flex: none; display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface-strong); }
+.cal-view-btn { height: 24px; padding: 0 10px; border: none; border-radius: 6px; background: none; color: var(--muted); font-size: 12px; cursor: pointer; }
+.cal-view-btn:hover { color: var(--ink); }
+.cal-view-btn.on { background: var(--surface-card); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+.cal-hasnote { display: inline-block; width: 5px; height: 5px; margin-left: 4px; border-radius: 50%; background: var(--accent, #3b82f6); vertical-align: middle; }
+/* ── Week view ── one scroller, two axes: vertical is time of day, horizontal walks the weeks and
+   snaps to one. Each .cal-wblock is exactly one scrollport wide (flex-basis % resolves against the
+   scrollport, not the scrolled content), so the 7 columns always fill the view. The gutter sticks
+   left, block heads stick top. Row height comes from --cal-hour-h, set inline from the HOUR_H that
+   also positions the events, so CSS and JS can't drift apart. */
+.cal-week { flex: 1; min-height: 0; display: flex; --cal-gutter: 54px; --cal-head-h: 26px; --cal-allday-h: 28px; }
+/* Snaps per day column (not per week), proximity so a flick eases to rest on a day boundary while a
+   small deliberate scroll stays put. scroll-padding-left keeps the snapped day clear of the gutter. */
+/* align-items: flex-start is load-bearing — stretched blocks would be capped at the scrollport
+   height and flex-shrink would squeeze their head/all-day rows out of step with the gutter's. */
+/* position: relative so the drag ghost can be placed in content coordinates and scroll with them. */
+.cal-week-body { position: relative; flex: 1; min-width: 0; overflow: auto; display: flex; align-items: flex-start; scroll-snap-type: x proximity; scroll-padding-left: var(--cal-gutter); overscroll-behavior-x: contain; }
+.cal-gutter { position: sticky; left: 0; z-index: 3; flex: 0 0 var(--cal-gutter); background: var(--canvas); border-right: 1px solid var(--hairline); }
+/* The label sits on the day-names row, not down beside the strip — level with "Sun 12", clear of the
+   hour labels scrolling under it. */
+.cal-gutter-head { position: sticky; top: 0; z-index: 4; height: calc(var(--cal-head-h) + var(--cal-allday-h)); display: flex; align-items: flex-start; justify-content: flex-end; padding: 4px 7px 0 0; font-size: 10px; color: var(--muted); background: var(--canvas); border-bottom: 1px solid var(--hairline); }
+/* Labels sit on the hour line, not centred in the row — same read as Apple's grid. */
+.cal-hour-lbl { height: var(--cal-hour-h); font-size: 10px; color: var(--muted); text-align: right; padding-right: 7px; transform: translateY(-5px); }
+/* min-width: 0 or the nowrap day headers set a floor wider than one scrollport, and the block stops
+   being exactly one week wide — which is what the snap and scroll maths both assume. */
+.cal-wblock { flex: 0 0 calc(100% - var(--cal-gutter)); min-width: 0; display: flex; flex-direction: column; }
+.cal-wblock-head, .cal-wblock-allday, .cal-wblock-body { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); flex: none; }
+.cal-wblock-head { position: sticky; top: 0; z-index: 2; height: var(--cal-head-h); background: var(--canvas); }
+.cal-wblock-allday { position: sticky; top: var(--cal-head-h); z-index: 2; height: var(--cal-allday-h); background: var(--canvas); border-bottom: 1px solid var(--hairline); }
+.cal-whead { padding: 4px 8px; font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: 0.2px; text-align: center; cursor: pointer; white-space: nowrap; }
+.cal-whead:hover { color: var(--ink); }
+.cal-whead.today, .cal-whead.today .cal-wnum { color: var(--accent, #3b82f6); }
+.cal-wnum { color: var(--ink); font-size: 13px; }
+.cal-allday-cell { display: flex; flex-direction: column; gap: 2px; padding: 3px; border-left: 1px solid var(--hairline-soft); cursor: pointer; overflow-y: auto; }
+.cal-allday-cell:hover { background: var(--hairline-soft); }
+/* Hour lines are a repeating gradient rather than 24 divs per column — with ~52 weeks of columns
+   rendered, that's a few thousand nodes saved. */
+.cal-wcol { position: relative; height: calc(24 * var(--cal-hour-h)); border-left: 1px solid var(--hairline-soft); cursor: pointer; scroll-snap-align: start;
+  background-image: repeating-linear-gradient(to bottom, var(--hairline-soft) 0 1px, transparent 1px var(--cal-hour-h)); }
+.cal-wcol.today { background-color: color-mix(in srgb, var(--accent, #3b82f6) 5%, transparent); }
+/* Events are absolutely placed within their column — same colour language as the day page's .ev-box.
+   Overlapping events share the width via inline left/width (see layoutDay). */
+.cal-ev { position: absolute; overflow: hidden; border: 1px solid color-mix(in srgb, var(--ev-color) 38%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--ev-color) 16%, var(--surface-card)); cursor: grab; }
+.cal-ev.sel { outline: 2px solid var(--ev-color); outline-offset: -1px; }
+/* Bottom edge = resize handle. Wider than it looks so it's actually catchable. */
+.cal-ev-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 6px; cursor: ns-resize; }
+/* Off-screen event markers: pinned to the top/bottom edge of the visible hours, one tick per event
+   you'd have to scroll to. Height must match PEEK_H. */
+.cal-peek { position: absolute; z-index: 1; height: 8px; display: flex; align-items: center; justify-content: center; gap: 3px; padding: 0 5px; pointer-events: none; }
+.cal-peek span { flex: 1 1 auto; max-width: 20px; height: 3px; border-radius: 2px; }
+/* The event is off in that direction, so the marker fades away from the grid. */
+.cal-peek--up { mask-image: linear-gradient(to bottom, #000 40%, transparent); }
+.cal-peek--dn { mask-image: linear-gradient(to top, #000 40%, transparent); }
+
+/* The live drag preview: follows the pointer, never intercepts it. */
+.cal-ev--ghost { z-index: 1; pointer-events: none; opacity: 0.9; border-style: dashed; border-width: 1.5px; }
+.cal-week-body.dragging { cursor: grabbing; user-select: none; }
+.cal-week-body:focus { outline: none; }
+.cal-ev-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 2px 5px; }
+.cal-ev-title { font-size: 11px; font-weight: 550; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-ev-time { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* All-day strip: same box, but in flow rather than time-positioned. */
+.cal-ev--chip { position: static; flex: none; padding: 2px 6px; }
+/* Day view — a free-form notebook editor with a container toolbar */
+/* Swipe wrapper is layout-transparent: a flex column that grows so .cal-day still fills. */
+.cal-day-swipe { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cal-day { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cal-day-tools { display: flex; align-items: center; gap: 8px; padding: 2px 2px 8px; }
+/* Borderless text, like the other quiet buttons — no container chrome. */
+.cal-tool { height: 28px; padding: 0 10px; border: none; border-radius: 8px; background: none; color: var(--muted); font-family: var(--sans); font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.cal-tool:hover:not(:disabled) { background: var(--hairline-soft); color: var(--ink); }
+.cal-tool:disabled { opacity: 0.5; cursor: default; }
+.cal-day-editor { flex: 1; min-height: 0; display: flex; }
+/* min-width: 0 as well as min-height — without it the editor's min-content (event boxes, tables)
+   is a floor it can't shrink past, so a narrow pane scrolls sideways instead of fitting. */
+.cal-day-editor .nb-editor { flex: 1; min-width: 0; min-height: 0; }
+.cal-repeat { position: relative; }
+.cal-repeat-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; width: 250px; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--surface-card); border: 1px solid var(--hairline-strong); border-radius: 11px; box-shadow: 0 12px 32px rgba(38,37,30,0.22); }
+.cal-repeat-label { font-size: 12.5px; color: var(--ink); line-height: 1.45; }
+.cal-repeat-row { display: flex; gap: 8px; }
+.cal-repeat-row .cal-input { flex: 1; }
+.cal-repeat-msg { font-size: 12px; color: var(--accent); }
+
+/* Event container (calendarEvent node) inside a day page */
+/* The container carries the event's own color: a soft tint of it, hairline in a stronger mix. */
+.ev-box { display: flex; gap: 0; margin: 8px 0; border: 1px solid color-mix(in srgb, var(--ev-color) 38%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--ev-color) 10%, var(--surface-card)); overflow: hidden; }
+/* Selected event: pink accent highlight only — no focus ring. */
+/* Selected — either as the node itself, or caught inside a text selection (see event.ts's plugin).
+   Outlined in the event's own colour, so a selection reads as "these events" at a glance. */
+.ev-box.ProseMirror-selectednode, .ev-box.ev-in-selection {
+  outline: 2px solid var(--ev-color); outline-offset: 1px;
+  background: color-mix(in srgb, var(--ev-color) 22%, var(--surface-card));
+}
+.ev-bar { width: 5px; flex: none; align-self: stretch; cursor: grab; }
+.ev-bar:active { cursor: grabbing; }
+.ev-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 9px 12px; }
+.ev-row { display: flex; align-items: center; gap: 10px; }
+.ev-title { flex: 1; min-width: 0; border: none; outline: none; background: none; color: var(--ink); font-size: 14.5px; font-weight: 600; font-family: var(--sans); }
+.ev-times { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.ev-dash { color: var(--muted); }
+/* iOS-style segmented time: click a segment, type digits, press a/p for AM/PM. No clock icon;
+   normal UI font; the selected segment gets the brand accent highlight (like iOS). */
+.ev-time { border: 1px solid var(--hairline-strong); border-radius: 6px; background: var(--canvas); color: var(--ink); font-family: var(--sans); font-size: 13px; padding: 3px 6px; }
+.ev-time::-webkit-calendar-picker-indicator { display: none; }
+.ev-time::-webkit-datetime-edit-ampm-field { text-transform: uppercase; }
+/* The default focus ring is drawn in the macOS system accent colour (yellow here) — replace it with
+   the app's own accent on the border, so focus reads as pink like everything else. */
+.ev-time:focus, .ev-time:focus-visible, .ev-time:focus-within { outline: none; border-color: var(--accent); }
+.ev-time::-webkit-datetime-edit-hour-field:focus,
+.ev-time::-webkit-datetime-edit-minute-field:focus,
+.ev-time::-webkit-datetime-edit-ampm-field:focus { background: var(--accent); color: var(--on-accent, #fff); border-radius: 3px; outline: none; }
+.ev-colors { display: flex; align-items: center; gap: 6px; }
+.ev-swatch { width: 16px; height: 16px; border: 2px solid transparent; border-radius: 50%; cursor: pointer; padding: 0; }
+.ev-swatch.on { border-color: var(--ink); }
+.ev-del { margin-left: auto; border: none; background: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.ev-del:hover { color: #ef4444; }
+
+/* Task-list to-dos (also usable in ordinary notes). Custom rounded checkbox with a white check
+   that turns the brand accent (pink) when done — the native input is kept (transparent) so the
+   TaskItem toggle still fires. */
+.ProseMirror ul[data-type="taskList"] { list-style: none; padding-left: 4px; }
+.ProseMirror ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 9px; }
+.ProseMirror ul[data-type="taskList"] li > label { position: relative; flex: none; display: inline-flex; margin-top: 3px; user-select: none; -webkit-user-select: none; }
+.ProseMirror ul[data-type="taskList"] li > div { flex: 1; min-width: 0; }
+.ProseMirror ul[data-type="taskList"] li > label input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.ProseMirror ul[data-type="taskList"] li > label span { position: relative; display: inline-block; width: 18px; height: 18px; border-radius: 5px; background: var(--canvas); border: 1.5px solid var(--hairline-strong); transition: background 0.15s ease, border-color 0.15s ease; }
+/* Centred off the box's middle rather than hard-coded offsets — those were measured from the padding
+   edge, so the 1.5px border pushed the tick right and low. The extra -1.5px lift is optical: the
+   rotated tick's ink sits below its own box centre (the empty inner corner isn't drawn). */
+.ProseMirror ul[data-type="taskList"] li > label span::after { content: ''; position: absolute; left: 50%; top: 50%; width: 4.5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: translate(-50%, -50%) translateY(-1.5px) rotate(45deg) scale(0); opacity: 0; transition: transform 0.15s ease, opacity 0.12s ease; }
+.ProseMirror ul[data-type="taskList"] li[data-checked="true"] > label span { background-image: linear-gradient(var(--accent), var(--accent-active)); border-color: var(--accent-active); }
+.ProseMirror ul[data-type="taskList"] li[data-checked="true"] > label span::after { transform: translate(-50%, -50%) translateY(-1.5px) rotate(45deg) scale(1); opacity: 1; }
+.ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div { color: var(--muted); text-decoration: line-through; }
+/* Pinned Calendar row at the top of the sidebar */
+.cal-pin { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px; border: none; border-radius: 8px; background: none; color: var(--ink); cursor: pointer; margin-bottom: 2px; }
+.cal-pin:hover { background: var(--hairline-soft); }
+.cal-pin.selected { background: var(--accent-soft); color: var(--accent); }
+.cal-pin.selected .row-icon { color: var(--accent); }
+.cal-pin-label { font-size: 13px; font-weight: 500; }
+
+/* ── System dashboard (view=dashboard) ────────────────────────────────────────────────── */
+.dash { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 20px 24px; display: flex; flex-direction: column; gap: 18px; }
+.dash--loading { align-items: center; justify-content: center; color: var(--muted); }
+/* Two circles and a square on one line. flex-basis 0 + min-width 0 means they share the width evenly
+   and shrink together on a narrow window instead of wrapping; max-width stops them ballooning on a
+   wide one. Everything inside is sized in % or aspect-ratio so it scales with the tile. */
+.dash-top { display: flex; gap: 16px; align-items: flex-start; }
+.dash-tile { flex: 1 1 0; min-width: 0; max-width: 148px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.dash-ring-svg { display: block; width: 100%; height: auto; }
+.dash-ring-num { font-size: 22px; font-weight: 700; fill: var(--ink); }
+.dash-ring-lbl { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; fill: var(--muted); }
+.dash-ring-sub { font-size: 11.5px; color: var(--muted); text-align: center; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-card { border: 1px solid var(--hairline-soft); border-radius: 12px; padding: 14px 16px; background: var(--surface-card); }
+.dash-card-title { font-size: 12.5px; font-weight: 650; color: var(--ink); margin-bottom: 12px; }
+.dash-dim { color: var(--muted); font-weight: 400; }
+/* A square to sit alongside the two circles: 4 per row (8 cores → 2 rows), more cores just add rows.
+   aspect-ratio keeps it square at any tile width; the bars size off the cell, not fixed px. */
+.dash-cores { width: 100%; aspect-ratio: 1; display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 1fr; gap: 7%; }
+.dash-core { display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 0; }
+.dash-core-bar { flex: 1; width: 44%; min-width: 6px; border-radius: 4px; background: var(--hairline-soft); display: flex; align-items: flex-end; overflow: hidden; }
+.dash-core-fill { width: 100%; border-radius: 4px; transition: height 0.4s ease; }
+.dash-core-lbl { flex: none; font-size: 9px; line-height: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* Busiest apps: name, proportional bar, number. */
+.dash-app { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+.dash-app-name { flex: 1 1 40%; min-width: 0; font-size: 12.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-app-track { flex: 1 1 60%; height: 6px; border-radius: 3px; background: var(--hairline-soft); overflow: hidden; }
+.dash-app-fill { display: block; height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+.dash-app-cpu { flex: none; width: 46px; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dash-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.dash-stat { display: flex; justify-content: space-between; gap: 12px; padding: 11px 14px; border: 1px solid var(--hairline-soft); border-radius: 10px; background: var(--surface-card); }
+.dash-k { font-size: 12.5px; color: var(--muted); }
+.dash-v { font-size: 12.5px; color: var(--ink); font-weight: 550; text-align: right; font-variant-numeric: tabular-nums; }

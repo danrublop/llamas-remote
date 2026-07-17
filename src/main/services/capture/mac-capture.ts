@@ -155,6 +155,9 @@ export function createMacCaptureProvider(): CaptureProvider {
     clipboard: makeClipboardAdapter(),
     triggerCopy,
     getSourceApp: () => cachedSourceApp,
+    // The clipboard fallback fires right after the ⌘⇧Space hotkey, so wait for the user to
+    // let go of ⌘+Shift before synthesizing ⌘C (else it becomes ⌘⇧C and copies nothing).
+    options: { preCopyDelayMs: 250 },
   });
   return {
     async captureSelection(opts): Promise<CaptureResult> {

@@ -48,10 +48,12 @@ export class ChatController {
     text: string;
     model: string;
     useRag: boolean;
+    /** Instructions to put ahead of any retrieved context — the agent's tools (see main.ts). */
+    systemPrefix?: string;
     onToken?: (delta: string) => void;
     signal?: AbortSignal;
   }): Promise<{ answer: string; citations: string[] }> {
-    const { noteId, text, model, useRag, onToken, signal } = opts;
+    const { noteId, text, model, useRag, systemPrefix, onToken, signal } = opts;
     const turns = parseTranscript(this.deps.store.getBody(noteId) ?? '');
 
     // Persist the user turn immediately, so a cancelled/failed generation still leaves the
@@ -61,12 +63,15 @@ export class ChatController {
 
     // RAG: retrieve context for the user's message, excluding this chat's own note (so a chat
     // never feeds itself its own transcript). The retriever wraps note text as untrusted data.
-    let system: string | undefined;
+    let ragSystem: string | undefined;
     let citations: string[] = [];
     if (useRag && this.deps.retrieve) {
       const r = await this.deps.retrieve.retrieve(text, { excludeNoteId: noteId });
-      if (r) { system = r.system; citations = r.citations; }
+      if (r) { ragSystem = r.system; citations = r.citations; }
     }
+    // Tools first, retrieved notes after: the notes are untrusted data, so anything in them that
+    // looks like an instruction arrives already framed by the real instructions.
+    const system = [systemPrefix, ragSystem].filter(Boolean).join('\n\n') || undefined;
 
     // Throws on cancel ('cancelled') or error — the user turn is already saved, and we do NOT
     // append a partial assistant turn.

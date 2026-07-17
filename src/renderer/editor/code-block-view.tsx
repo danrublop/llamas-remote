@@ -10,7 +10,9 @@ import { NodeViewWrapper, NodeViewContent, type NodeViewProps } from '@tiptap/re
 import { CODE_LANGS } from './code-langs';
 
 export function CodeBlockView({ node, updateAttributes }: NodeViewProps) {
-  const lang = String(node.attrs.language || 'plaintext');
+  // Fallback must match the extension's defaultLanguage (see NotebookEditor) so the dropdown
+  // shows what's actually highlighted for an unlabeled block.
+  const lang = String(node.attrs.language || 'java');
   // A persisted / model-authored fence can carry a language not in CODE_LANGS (e.g. yaml,
   // haskell). Surface it as its own option so the controlled select shows it instead of going
   // blank; lowlight still highlights whatever the fence declared regardless of the dropdown.

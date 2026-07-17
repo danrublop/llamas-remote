@@ -19,8 +19,11 @@ import { Table } from '@tiptap/extension-table';
 import { TableRow } from '@tiptap/extension-table-row';
 import { TableHeader } from '@tiptap/extension-table-header';
 import { TableCell } from '@tiptap/extension-table-cell';
+import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { AiBlock } from './ai-block';
 import { Drawing } from './drawing';
+import { CalendarEvent } from './event';
+import { InlineCodeExit } from './inline-code-exit';
 
 // Syntax highlighting for code blocks — `common` bundles ~37 languages (java, js, python, …).
 // Exported so the live editor can build a NodeView variant that reuses this same instance.
@@ -152,18 +155,24 @@ export const TableMd = Table.extend({
  * `opts.aiBlock` lets the live editor pass the React-NodeView variant of the AI block while
  * the headless parse/serialize paths use the plain node — same schema, so JSON is compatible.
  */
-export function notebookExtensions(opts?: { aiBlock?: AnyExtension; codeBlock?: AnyExtension; drawing?: AnyExtension }): AnyExtension[] {
+export function notebookExtensions(opts?: { aiBlock?: AnyExtension; codeBlock?: AnyExtension; drawing?: AnyExtension; event?: AnyExtension }): AnyExtension[] {
   return [
     // paragraph/heading swapped for indent-aware variants (Markdown-serialize their indent level).
     StarterKit.configure({ codeBlock: false, paragraph: false, heading: false, link: { openOnClick: false } }),
     ParagraphMd,
     HeadingMd,
     Indent,
+    InlineCodeExit,
     Markdown,
+    // Checkbox to-dos (GFM `- [ ]` / `- [x]` — round-trips through @tiptap/markdown).
+    TaskList,
+    TaskItem.configure({ nested: true }),
     opts?.aiBlock ?? AiBlock,
     // Live editor passes a React-NodeView variant (PNG preview + open-canvas); headless paths
     // use the plain node so markdown round-tripping needs no React.
     opts?.drawing ?? Drawing,
+    // Calendar event container (day pages). NodeView variant in the live editor; plain node here.
+    opts?.event ?? CalendarEvent,
     TextStyleMd,
     Color,
     // Per-selection font + size, stored as `textStyle` mark attrs → they live in the document,
