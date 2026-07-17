@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **To-do lists in any note.** The toolbar "…" menu gains "To-do list" (the same checklist the calendar uses), so any note can hold checkable tasks.
 - **Colour palette menus for text + highlight.** The toolbar text-colour and highlight buttons now open a preset swatch palette plus a "colour wheel" button for a custom colour; highlight adds a Remove option.
 - **Calendar and system views.** Notes can now be a calendar (day pages with events + to-dos) or a live Mac system dashboard, alongside the existing text / chat / drawing / game kinds.
+- **Swipe between days.** In the calendar day view, a horizontal trackpad swipe flips the day (left → next, right → previous).
 - **Note-side chat panel.** A right-side "chat with this note" panel that reasons over the open note's Markdown.
 
 ### Changed
